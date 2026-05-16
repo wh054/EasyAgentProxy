@@ -1,0 +1,74 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="ProxyKing AppProxyHelper"
+    Manufacturer="ProxyKing"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="A0387026-2F07-4C9E-8797-FA717835C21B"
+    Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ProxyKing AppProxyHelper is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Icon Id="AppProxyHelper.exe" SourceFile="$(var.PublishDir)\AppProxyHelper.exe" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="ProxyKing">
+        <Directory Id="INSTALLFOLDER" Name="AppProxyHelper" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="ProxyKing AppProxyHelper" />
+    </StandardDirectory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppProxyHelperExeComponent" Guid="61F4DF02-5F1F-4529-B6C0-B8096741BE59" Bitness="always64">
+        <File Id="AppProxyHelperExe" Source="$(var.PublishDir)\AppProxyHelper.exe" KeyPath="yes">
+          <Shortcut
+            Id="ApplicationStartMenuShortcut"
+            Directory="ApplicationProgramsFolder"
+            Name="ProxyKing AppProxyHelper"
+            Description="Launch ProxyKing AppProxyHelper"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="AppProxyHelper.exe"
+            Advertise="yes" />
+        </File>
+      </Component>
+
+      <Component Id="WinDivertDllComponent" Guid="F7B0D65D-0664-4C8D-9267-311DD1D536A5" Bitness="always64">
+        <File Id="WinDivertDll" Source="$(var.PublishDir)\WinDivert.dll" KeyPath="yes" />
+      </Component>
+
+      <Component Id="WinDivertDriverComponent" Guid="B58626BD-F1B1-494A-B0A6-51652EF836D9" Bitness="always64">
+        <File Id="WinDivertDriver" Source="$(var.PublishDir)\WinDivert64.sys" KeyPath="yes" />
+      </Component>
+
+      <Component Id="ExampleConfigComponent" Guid="0305E949-59BB-4310-8D83-C11C07F5644F" Bitness="always64">
+        <File Id="ExampleConfig" Source="$(var.PublishDir)\app-proxy.example.json" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationProgramsFolderComponent" Guid="BBA190E0-84AA-4784-8C19-A8C71CF9B1A2" Bitness="always64">
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\ProxyKing\AppProxyHelper"
+          Name="StartMenuFolder"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="ProxyKing AppProxyHelper" Level="1">
+      <ComponentRef Id="AppProxyHelperExeComponent" />
+      <ComponentRef Id="WinDivertDllComponent" />
+      <ComponentRef Id="WinDivertDriverComponent" />
+      <ComponentRef Id="ExampleConfigComponent" />
+      <ComponentRef Id="ApplicationProgramsFolderComponent" />
+    </Feature>
+  </Package>
+</Wix>

@@ -107,15 +107,14 @@ internal sealed class AppProxyGuiForm : Form
         Size = new Size(MainWindowWidth, MainWindowHeight);
         MinimizeBox = true;
         ShowInTaskbar = true;
+        Icon = LoadApplicationIcon();
 
         ConfigureTrayIcon();
         BuildUi();
         ConfigureTargetPresets();
         Populate(new AppProxyConfig());
 
-        var configPath = !string.IsNullOrWhiteSpace(initialConfigPath)
-            ? Path.GetFullPath(initialConfigPath)
-            : Path.GetFullPath("app-proxy.json");
+        var configPath = ResolveInitialConfigPath(initialConfigPath);
         _configPathText.Text = configPath;
 
         if (File.Exists(configPath))
@@ -127,6 +126,27 @@ internal sealed class AppProxyGuiForm : Form
         {
             Shown += AutoRunOnShown;
         }
+    }
+
+    private static string ResolveInitialConfigPath(string? initialConfigPath)
+    {
+        if (!string.IsNullOrWhiteSpace(initialConfigPath))
+        {
+            return Path.GetFullPath(initialConfigPath);
+        }
+
+        var currentDirectoryConfig = Path.GetFullPath("app-proxy.json");
+        if (File.Exists(currentDirectoryConfig))
+        {
+            return currentDirectoryConfig;
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var configDirectory = string.IsNullOrWhiteSpace(localAppData)
+            ? AppContext.BaseDirectory
+            : Path.Combine(localAppData, "ProxyKing", "AppProxyHelper");
+
+        return Path.Combine(configDirectory, "app-proxy.json");
     }
 
     internal void CloseForElevatedRestart()
@@ -1152,6 +1172,11 @@ internal sealed class AppProxyGuiForm : Form
     {
         var presets = new List<TargetApplicationPreset>();
         AddTargetPreset(presets, "Codex 应用", GetCodexCandidates(), "--disable-quic");
+        AddTargetPreset(presets, "Steam", GetSteamCandidates());
+        AddTargetPreset(presets, "Google Chrome", GetChromeCandidates(), "--disable-quic");
+        AddTargetPreset(presets, "Microsoft Edge", GetEdgeCandidates(), "--disable-quic");
+        AddTargetPreset(presets, "Mozilla Firefox", GetFirefoxCandidates());
+        AddTargetPreset(presets, "Brave Browser", GetBraveCandidates(), "--disable-quic");
         AddTargetPreset(presets, "Cursor 应用", GetCursorCandidates(), "--disable-quic");
         AddTargetPreset(presets, "Antigravity 应用", GetAntigravityCandidates(), "--disable-quic");
         return presets;
@@ -1211,6 +1236,11 @@ internal sealed class AppProxyGuiForm : Form
         return null;
     }
 
+    private static Icon LoadApplicationIcon()
+    {
+        return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+    }
+
     private static IEnumerable<string> GetCodexCandidates()
     {
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -1232,6 +1262,70 @@ internal sealed class AppProxyGuiForm : Form
         {
             yield return Path.Combine(localAppData, "Programs", "Codex", "Codex.exe");
             yield return Path.Combine(localAppData, "Programs", "codex", "Codex.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetSteamCandidates()
+    {
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "Steam", "steam.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetChromeCandidates()
+    {
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "Google", "Chrome", "Application", "chrome.exe");
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "Google", "Chrome", "Application", "chrome.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetEdgeCandidates()
+    {
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe");
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "Microsoft", "Edge", "Application", "msedge.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetFirefoxCandidates()
+    {
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "Mozilla Firefox", "firefox.exe");
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "Mozilla Firefox", "firefox.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetBraveCandidates()
+    {
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe");
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe");
         }
     }
 
