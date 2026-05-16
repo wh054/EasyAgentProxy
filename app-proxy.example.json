@@ -1,6 +1,7 @@
 {
   "mode": "Transparent",
   "targetPath": "C:\\Path\\To\\App.exe",
+  "targetProcessNames": [],
   "targetArguments": [
     "--example-arg"
   ],

@@ -89,9 +89,11 @@ internal sealed class TransparentConnectionTable
     private readonly AppLogger _logger;
     private readonly bool _trackChildProcesses;
     private readonly HashSet<string> _excludedChildProcessNames;
+    private readonly HashSet<string> _targetProcessNames;
     private readonly Dictionary<uint, bool> _targetProcessCache = new();
     private readonly HashSet<uint> _loggedChildProcesses = new();
     private readonly HashSet<uint> _loggedExcludedChildProcesses = new();
+    private readonly HashSet<uint> _loggedNamedTargetProcesses = new();
     private int? _targetProcessId;
     private string? _targetPath;
     private DateTimeOffset _targetProcessCacheExpiresAt;
@@ -99,13 +101,19 @@ internal sealed class TransparentConnectionTable
     public TransparentConnectionTable(
         AppLogger logger,
         bool trackChildProcesses,
-        IEnumerable<string> excludedChildProcessNames)
+        IEnumerable<string> excludedChildProcessNames,
+        IEnumerable<string> targetProcessNames)
     {
         _logger = logger;
         _trackChildProcesses = trackChildProcesses;
         _excludedChildProcessNames = excludedChildProcessNames
             .Where(static name => !string.IsNullOrWhiteSpace(name))
             .Select(static name => name.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _targetProcessNames = targetProcessNames
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Select(static name => Path.GetFileName(name.Trim()))
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -118,6 +126,7 @@ internal sealed class TransparentConnectionTable
             _targetProcessCache.Clear();
             _loggedChildProcesses.Clear();
             _loggedExcludedChildProcesses.Clear();
+            _loggedNamedTargetProcesses.Clear();
             _targetProcessCacheExpiresAt = DateTimeOffset.MinValue;
         }
 
@@ -447,13 +456,18 @@ internal sealed class TransparentConnectionTable
 
     private bool IsTargetProcess(uint processId)
     {
-        if (_targetProcessId is not { } targetProcessId)
+        if (_targetProcessId is { } targetProcessId && processId == (uint)targetProcessId)
         {
-            return false;
+            return true;
         }
 
-        if (processId == (uint)targetProcessId)
+        if (IsConfiguredTargetProcessName(processId, out var processName))
         {
+            if (MarkNamedTargetProcessLogged(processId))
+            {
+                _logger.Info($"透明拦截目标进程名: pid={processId}, name={ToExecutableProcessName(processName)}");
+            }
+
             return true;
         }
 
@@ -477,7 +491,32 @@ internal sealed class TransparentConnectionTable
             }
         }
 
-        var isChild = ProcessTreeSnapshot.IsDescendantOf(processId, (uint)targetProcessId);
+        var isChild = false;
+        uint? rootProcessId = null;
+        string? rootProcessName = null;
+
+        if (_targetProcessId is { } rootTargetProcessId)
+        {
+            isChild = ProcessTreeSnapshot.IsDescendantOf(processId, (uint)rootTargetProcessId);
+            if (isChild)
+            {
+                rootProcessId = (uint)rootTargetProcessId;
+            }
+        }
+
+        if (!isChild
+            && _targetProcessNames.Count > 0
+            && ProcessTreeSnapshot.TryFindAncestorByProcessName(
+                processId,
+                _targetProcessNames,
+                out var namedRootProcessId,
+                out var namedRootProcessName))
+        {
+            isChild = true;
+            rootProcessId = namedRootProcessId;
+            rootProcessName = namedRootProcessName;
+        }
+
         if (isChild && IsExcludedChildProcess(processId))
         {
             isChild = false;
@@ -490,10 +529,34 @@ internal sealed class TransparentConnectionTable
 
         if (isChild && MarkChildProcessLogged(processId))
         {
-            _logger.Info($"透明拦截目标子进程: pid={processId}, rootPid={targetProcessId}");
+            var rootText = rootProcessId is null
+                ? ""
+                : $", rootPid={rootProcessId}";
+            var rootNameText = string.IsNullOrWhiteSpace(rootProcessName)
+                ? ""
+                : $", rootName={ToExecutableProcessName(rootProcessName)}";
+            _logger.Info($"透明拦截目标子进程: pid={processId}{rootText}{rootNameText}");
         }
 
         return isChild;
+    }
+
+    private bool IsConfiguredTargetProcessName(uint processId, out string processName)
+    {
+        processName = string.Empty;
+        if (_targetProcessNames.Count == 0)
+        {
+            return false;
+        }
+
+        var candidate = ProcessTreeSnapshot.TryGetProcessName(processId);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        processName = candidate;
+        return ProcessNameMatches(_targetProcessNames, candidate);
     }
 
     private bool IsExcludedChildProcess(uint processId)
@@ -509,11 +572,8 @@ internal sealed class TransparentConnectionTable
             return false;
         }
 
-        var nameWithExtension = processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-            ? processName
-            : $"{processName}.exe";
-        var excluded = _excludedChildProcessNames.Contains(processName)
-            || _excludedChildProcessNames.Contains(nameWithExtension);
+        var nameWithExtension = ToExecutableProcessName(processName);
+        var excluded = ProcessNameMatches(_excludedChildProcessNames, processName);
         if (excluded && MarkExcludedChildProcessLogged(processId))
         {
             _logger.Info($"透明拦截已排除子进程: pid={processId}, name={nameWithExtension}");
@@ -536,6 +596,27 @@ internal sealed class TransparentConnectionTable
         {
             return _loggedExcludedChildProcesses.Add(processId);
         }
+    }
+
+    private bool MarkNamedTargetProcessLogged(uint processId)
+    {
+        lock (_sync)
+        {
+            return _loggedNamedTargetProcesses.Add(processId);
+        }
+    }
+
+    private static bool ProcessNameMatches(IReadOnlySet<string> processNames, string processName)
+    {
+        return processNames.Contains(processName)
+            || processNames.Contains(ToExecutableProcessName(processName));
+    }
+
+    private static string ToExecutableProcessName(string processName)
+    {
+        return processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? processName
+            : $"{processName}.exe";
     }
 }
 
@@ -578,6 +659,50 @@ internal static class ProcessTreeSnapshot
         return false;
     }
 
+    public static bool TryFindAncestorByProcessName(
+        uint processId,
+        IReadOnlySet<string> processNames,
+        out uint ancestorProcessId,
+        out string processName)
+    {
+        ancestorProcessId = 0;
+        processName = string.Empty;
+        if (processNames.Count == 0)
+        {
+            return false;
+        }
+
+        var parents = GetParentProcessMap();
+        var seen = new HashSet<uint>();
+        var current = processId;
+
+        for (var depth = 0; depth < 64; depth++)
+        {
+            if (!parents.TryGetValue(current, out var parentProcessId) || parentProcessId == 0)
+            {
+                return false;
+            }
+
+            if (!seen.Add(parentProcessId))
+            {
+                return false;
+            }
+
+            var candidateName = TryGetProcessName(parentProcessId);
+            if (!string.IsNullOrWhiteSpace(candidateName)
+                && ProcessNameMatches(processNames, candidateName))
+            {
+                ancestorProcessId = parentProcessId;
+                processName = candidateName;
+                return true;
+            }
+
+            current = parentProcessId;
+        }
+
+        return false;
+    }
+
     public static string? TryGetProcessName(uint processId)
     {
         if (processId > int.MaxValue)
@@ -594,6 +719,14 @@ internal static class ProcessTreeSnapshot
         {
             return null;
         }
+    }
+
+    private static bool ProcessNameMatches(IReadOnlySet<string> processNames, string processName)
+    {
+        var nameWithExtension = processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? processName
+            : $"{processName}.exe";
+        return processNames.Contains(processName) || processNames.Contains(nameWithExtension);
     }
 
     private static Dictionary<uint, uint> GetParentProcessMap()

@@ -4,6 +4,7 @@ public sealed class AppProxyConfig
 {
     public string Mode { get; set; } = "Transparent";
     public string TargetPath { get; set; } = "";
+    public string[] TargetProcessNames { get; set; } = Array.Empty<string>();
     public string[] TargetArguments { get; set; } = Array.Empty<string>();
     public string? WorkingDirectory { get; set; }
     public string ProxyUri { get; set; } = "socks5://127.0.0.1:7890";

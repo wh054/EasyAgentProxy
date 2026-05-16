@@ -23,8 +23,19 @@ public sealed class ProcessProxyLauncher
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(_config.TargetPath))
+        {
+            if (CanRunByProcessNameTargets())
+            {
+                return await WaitForProcessNameTargetsAsync(cancellationToken);
+            }
+
+            _logger.Error("目标程序不存在: targetPath 为空，且未配置 targetProcessNames。");
+            return 2;
+        }
+
         var targetPath = PathResolver.Resolve(_config.TargetPath, _loadedConfig.BaseDirectory);
-        if (string.IsNullOrWhiteSpace(_config.TargetPath) || !File.Exists(targetPath))
+        if (!File.Exists(targetPath))
         {
             _logger.Error($"目标程序不存在: {targetPath}");
             return 2;
@@ -232,5 +243,28 @@ public sealed class ProcessProxyLauncher
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private bool CanRunByProcessNameTargets()
+    {
+        return _config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase)
+            && _config.TargetProcessNames.Length > 0;
+    }
+
+    private async Task<int> WaitForProcessNameTargetsAsync(CancellationToken cancellationToken)
+    {
+        _logger.Info($"未配置 targetPath；将按进程名匹配目标: {string.Join(", ", _config.TargetProcessNames)}");
+        _logger.Info("透明拦截保持运行中；按 Ctrl+C 或在界面点击停止来结束。");
+
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Warn("等待进程名匹配目标时被取消。");
+            return 130;
+        }
     }
 }

@@ -40,6 +40,7 @@ public static class ConfigLoader
         {
             Mode = "Transparent",
             TargetPath = @"C:\Path\To\App.exe",
+            TargetProcessNames = Array.Empty<string>(),
             TargetArguments = new[] { "--example-arg" },
             WorkingDirectory = null,
             ProxyUri = "socks5://127.0.0.1:7890",
@@ -108,6 +109,10 @@ public static class ConfigLoader
 
     private static void Normalize(AppProxyConfig config, string baseDirectory)
     {
+        config.TargetProcessNames = NormalizeProcessNames(
+            config.TargetProcessNames,
+            Array.Empty<string>());
+
         config.Transparent.ExcludedChildProcessNames = NormalizeProcessNames(
             config.Transparent.ExcludedChildProcessNames,
             new TransparentInterceptionConfig().ExcludedChildProcessNames);

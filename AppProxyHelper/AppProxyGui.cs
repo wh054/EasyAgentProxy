@@ -28,12 +28,20 @@ public static class AppProxyGui
 internal sealed class AppProxyGuiForm : Form
 {
     private const int ErrorCancelled = 1223;
+    private const int MainWindowWidth = 1040;
+    private const int MainWindowHeight = 740;
+    private const int MainConfigBarHeight = 32;
+    private const int MainActionBarHeight = 38;
+    private const int MainLogHeight = 112;
+    private const int CompactRowHeight = 32;
+    private const int TargetSourceHeight = 146;
     private const string ManualTargetPresetText = "手动选择";
 
     private readonly TextBox _configPathText = new();
     private readonly ComboBox _modeCombo = new();
     private readonly ComboBox _targetPresetCombo = new();
     private readonly TextBox _targetPathText = new();
+    private readonly TextBox _targetProcessNamesText = new();
     private readonly TextBox _targetArgumentsText = new();
     private readonly TextBox _workingDirectoryText = new();
     private readonly TextBox _proxyUriText = new();
@@ -76,6 +84,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly Button _checkButton = new();
     private readonly Button _runButton = new();
     private readonly Button _stopButton = new();
+    private Button? _selectProcessButton;
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly List<TargetApplicationPreset> _targetPresets = new();
@@ -90,9 +99,12 @@ internal sealed class AppProxyGuiForm : Form
     {
         Text = "AppProxyHelper";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(860, 620);
-        Size = new Size(900, 680);
         AutoScaleMode = AutoScaleMode.Dpi;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        MinimumSize = new Size(MainWindowWidth, MainWindowHeight);
+        MaximumSize = new Size(MainWindowWidth, MainWindowHeight);
+        Size = new Size(MainWindowWidth, MainWindowHeight);
         MinimizeBox = true;
         ShowInTaskbar = true;
 
@@ -215,10 +227,10 @@ internal sealed class AppProxyGuiForm : Form
             RowCount = 4,
             Padding = new Padding(8)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainConfigBarHeight));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainActionBarHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainLogHeight));
         Controls.Add(root);
 
         root.Controls.Add(BuildConfigBar(), 0, 0);
@@ -236,6 +248,7 @@ internal sealed class AppProxyGuiForm : Form
         _logText.ReadOnly = true;
         _logText.ScrollBars = ScrollBars.Vertical;
         _logText.Font = new Font(FontFamily.GenericMonospace, 9);
+        _logText.Margin = new Padding(0);
         root.Controls.Add(_logText, 0, 3);
     }
 
@@ -246,11 +259,11 @@ internal sealed class AppProxyGuiForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 5
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
 
         panel.Controls.Add(MakeLabel("配置"), 0, 0);
         _configPathText.Dock = DockStyle.Fill;
@@ -273,27 +286,79 @@ internal sealed class AppProxyGuiForm : Form
     private TabPage BuildTargetTab()
     {
         var page = new TabPage("目标/代理");
-        var table = MakeSingleColumnTable(11);
-        page.Controls.Add(table);
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(6)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, TargetSourceHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        page.Controls.Add(root);
+
+        root.Controls.Add(BuildTargetSourceGroup(), 0, 0);
+        root.Controls.Add(BuildTargetOptionsGroup(), 0, 1);
+
+        return page;
+    }
+
+    private Control BuildTargetSourceGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "目标来源",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+
+        var table = MakeTargetSourceTable();
+        group.Controls.Add(table);
+
+        ConfigureTargetPresetCombo();
+        AddRow(table, 0, "常用应用", _targetPresetCombo);
+
+        AddRow(table, 1, "手动 exe", _targetPathText, MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*")));
+
+        _selectProcessButton = MakeButton("从进程中选择");
+        _selectProcessButton.Click += (_, _) => SelectTargetProcesses();
+        AddRow(table, 2, "运行中进程", _targetProcessNamesText, _selectProcessButton);
+
+        return group;
+    }
+
+    private Control BuildTargetOptionsGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "代理与运行",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
+
+        var table = MakeSingleColumnTable(8);
+        group.Controls.Add(table);
 
         ConfigureCombo(_modeCombo, "Transparent", "Environment");
         _modeCombo.SelectedIndexChanged += (_, _) => RefreshModeState();
         AddRow(table, 0, "模式", _modeCombo);
 
-        ConfigureTargetPresetCombo();
-        AddRow(table, 1, "常用应用", _targetPresetCombo);
-
-        AddRow(table, 2, "应用 exe", _targetPathText, MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*")));
-        AddRow(table, 3, "启动参数", _targetArgumentsText);
-        AddRow(table, 4, "工作目录", _workingDirectoryText, MakeBrowseButton(() => BrowseFolder(_workingDirectoryText)));
-        AddRow(table, 5, "代理 URI", _proxyUriText);
-        AddRow(table, 6, "NO_PROXY", _noProxyText);
-        AddRow(table, 7, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
+        AddRow(table, 1, "启动参数", _targetArgumentsText);
+        AddRow(table, 2, "工作目录", _workingDirectoryText, MakeBrowseButton(() => BrowseFolder(_workingDirectoryText)));
+        AddRow(table, 3, "代理 URI", _proxyUriText);
+        AddRow(table, 4, "NO_PROXY", _noProxyText);
+        AddRow(table, 5, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
 
         ConfigureCombo(_minimumLogLevelCombo, "Debug", "Information", "Warning", "Error");
-        AddRow(table, 8, "日志级别", _minimumLogLevelCombo);
+        AddRow(table, 6, "日志级别", _minimumLogLevelCombo);
 
-        var checks = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        var checks = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            WrapContents = false,
+            Margin = new Padding(3, 1, 3, 1)
+        };
         ConfigureCheck(_captureChildOutputCheck, "捕获输出");
         ConfigureCheck(_injectProxyEnvironmentCheck, "注入环境变量");
         ConfigureCheck(_waitForExitCheck, "等待退出");
@@ -307,18 +372,9 @@ internal sealed class AppProxyGuiForm : Form
             _runDiagnosticsCheck,
             _abortOnDiagnosticsFailCheck
         });
-        AddWideRow(table, 9, "运行选项", checks);
+        AddWideRow(table, 7, "运行选项", checks);
 
-        var hint = new Label
-        {
-            Dock = DockStyle.Fill,
-            Text = "Transparent 启动时会主动请求管理员权限；Environment 只注入代理环境变量。",
-            TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = SystemColors.GrayText
-        };
-        AddWideRow(table, 10, "", hint);
-
-        return page;
+        return group;
     }
 
     private TabPage BuildDiagnosticsTab()
@@ -347,25 +403,27 @@ internal sealed class AppProxyGuiForm : Form
     {
         var page = new TabPage("透明拦截");
         _transparentPanel.Dock = DockStyle.Fill;
+        _transparentPanel.Margin = new Padding(0);
         page.Controls.Add(_transparentPanel);
 
         var table = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 6,
-            RowCount = 9,
-            Padding = new Padding(8)
+            RowCount = 10,
+            Padding = new Padding(6)
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
         for (var i = 0; i < 9; i++)
         {
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
         }
+        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _transparentPanel.Controls.Add(table);
 
@@ -408,7 +466,7 @@ internal sealed class AppProxyGuiForm : Form
         AddPairRow(table, 7, "队列字节", _queueSizeNumber, null, "子进程", _trackChildProcessesCheck, null);
 
         table.Controls.Add(MakeLabel("排除子进程"), 0, 8);
-        _excludedChildProcessNamesText.Dock = DockStyle.Fill;
+        ConfigureCellControl(_excludedChildProcessNamesText);
         table.Controls.Add(_excludedChildProcessNamesText, 1, 8);
         table.SetColumnSpan(_excludedChildProcessNamesText, 5);
         return page;
@@ -421,10 +479,10 @@ internal sealed class AppProxyGuiForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 5
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         _checkButton.Text = "检查";
@@ -448,6 +506,7 @@ internal sealed class AppProxyGuiForm : Form
         panel.Controls.Add(openLogButton, 3, 0);
 
         _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.Margin = new Padding(8, 0, 0, 0);
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _statusLabel.ForeColor = SystemColors.GrayText;
         panel.Controls.Add(_statusLabel, 4, 0);
@@ -547,6 +606,7 @@ internal sealed class AppProxyGuiForm : Form
         {
             Mode = SelectedText(_modeCombo, "Transparent"),
             TargetPath = _targetPathText.Text.Trim(),
+            TargetProcessNames = SplitCsv(_targetProcessNamesText.Text),
             TargetArguments = SplitArguments(_targetArgumentsText.Text),
             WorkingDirectory = string.IsNullOrWhiteSpace(_workingDirectoryText.Text) ? null : _workingDirectoryText.Text.Trim(),
             ProxyUri = _proxyUriText.Text.Trim(),
@@ -593,6 +653,7 @@ internal sealed class AppProxyGuiForm : Form
     {
         SelectCombo(_modeCombo, config.Mode);
         _targetPathText.Text = config.TargetPath;
+        _targetProcessNamesText.Text = string.Join(", ", config.TargetProcessNames);
         _targetArgumentsText.Text = FormatArguments(config.TargetArguments);
         _workingDirectoryText.Text = config.WorkingDirectory ?? "";
         RefreshTargetPresetSelection(config.TargetPath);
@@ -863,6 +924,11 @@ internal sealed class AppProxyGuiForm : Form
     {
         var transparent = SelectedText(_modeCombo, "Transparent").Equals("Transparent", StringComparison.OrdinalIgnoreCase);
         _transparentPanel.Enabled = transparent;
+        _targetProcessNamesText.Enabled = transparent;
+        if (_selectProcessButton is not null)
+        {
+            _selectProcessButton.Enabled = transparent;
+        }
     }
 
     private void AppendLog(string text)
@@ -977,6 +1043,18 @@ internal sealed class AppProxyGuiForm : Form
         {
             target.Text = dialog.SelectedPath;
         }
+    }
+
+    private void SelectTargetProcesses()
+    {
+        using var dialog = new ProcessSelectionDialog(SplitCsv(_targetProcessNamesText.Text));
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _targetProcessNamesText.Text = string.Join(", ", dialog.SelectedProcessNames);
+        SetStatus($"已选择 {dialog.SelectedProcessNames.Length} 个运行中进程。");
     }
 
     private void ConfigureTargetPresetCombo()
@@ -1265,16 +1343,38 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = rows,
-            Padding = new Padding(8)
+            RowCount = rows + 1,
+            Padding = new Padding(6)
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
         for (var i = 0; i < rows; i++)
         {
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
         }
+        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        return table;
+    }
+
+    private static TableLayoutPanel MakeTargetSourceTable()
+    {
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 4,
+            Padding = new Padding(6, 8, 6, 4)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        for (var i = 0; i < 3; i++)
+        {
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
+        }
+        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         return table;
     }
@@ -1282,7 +1382,7 @@ internal sealed class AppProxyGuiForm : Form
     private static void AddRow(TableLayoutPanel table, int row, string label, Control input, Control? button = null)
     {
         table.Controls.Add(MakeLabel(label), 0, row);
-        input.Dock = DockStyle.Fill;
+        ConfigureCellControl(input);
         table.Controls.Add(input, 1, row);
         if (button is not null)
         {
@@ -1293,7 +1393,7 @@ internal sealed class AppProxyGuiForm : Form
     private static void AddWideRow(TableLayoutPanel table, int row, string label, Control input)
     {
         table.Controls.Add(MakeLabel(label), 0, row);
-        input.Dock = DockStyle.Fill;
+        ConfigureCellControl(input);
         table.Controls.Add(input, 1, row);
         table.SetColumnSpan(input, 2);
     }
@@ -1309,7 +1409,7 @@ internal sealed class AppProxyGuiForm : Form
         Control? rightButton)
     {
         table.Controls.Add(MakeLabel(leftLabel), 0, row);
-        leftInput.Dock = DockStyle.Fill;
+        ConfigureCellControl(leftInput);
         table.Controls.Add(leftInput, 1, row);
         if (leftButton is not null)
         {
@@ -1317,12 +1417,24 @@ internal sealed class AppProxyGuiForm : Form
         }
 
         table.Controls.Add(MakeLabel(rightLabel), 3, row);
-        rightInput.Dock = DockStyle.Fill;
+        ConfigureCellControl(rightInput);
         table.Controls.Add(rightInput, 4, row);
         if (rightButton is not null)
         {
             table.Controls.Add(rightButton, 5, row);
         }
+    }
+
+    private static void ConfigureCellControl(Control control)
+    {
+        control.Dock = DockStyle.Fill;
+        if (control is CheckBox)
+        {
+            control.Margin = new Padding(3, 5, 3, 1);
+            return;
+        }
+
+        control.Margin = new Padding(3, 2, 3, 2);
     }
 
     private static Label MakeLabel(string text)
@@ -1331,6 +1443,7 @@ internal sealed class AppProxyGuiForm : Form
         {
             Text = text,
             Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 4, 0),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
@@ -1342,7 +1455,8 @@ internal sealed class AppProxyGuiForm : Form
         {
             Text = text,
             Dock = DockStyle.Fill,
-            Margin = new Padding(3)
+            Margin = new Padding(2, 1, 2, 1),
+            MinimumSize = new Size(0, 28)
         };
     }
 
@@ -1370,7 +1484,7 @@ internal sealed class AppProxyGuiForm : Form
         check.Text = text;
         check.AutoSize = true;
         check.TextAlign = ContentAlignment.MiddleLeft;
-        check.Margin = new Padding(3, 6, 14, 3);
+        check.Margin = new Padding(3, 4, 12, 0);
     }
 
     private static void ConfigureNumber(NumericUpDown number, int min, int max, int value)
@@ -1380,6 +1494,7 @@ internal sealed class AppProxyGuiForm : Form
         number.Value = Clamp(value, number);
         number.ThousandsSeparator = true;
         number.Dock = DockStyle.Fill;
+        number.Margin = new Padding(3, 2, 3, 2);
     }
 
     private static decimal Clamp(int value, NumericUpDown number)
@@ -1555,6 +1670,335 @@ internal sealed class AppProxyGuiForm : Form
 
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && !root.StartsWith(@"\\", StringComparison.Ordinal);
+    }
+
+    private sealed class ProcessSelectionDialog : Form
+    {
+        private readonly TextBox _filterText = new();
+        private readonly ListView _processList = new();
+        private readonly Button _okButton = new();
+        private readonly Button _refreshButton = new();
+        private readonly ListViewGroup _applicationGroup = new("应用", HorizontalAlignment.Left);
+        private readonly ListViewGroup _backgroundGroup = new("后台进程", HorizontalAlignment.Left);
+        private readonly HashSet<string> _checkedProcessNames;
+        private readonly List<ProcessListItem> _processes = new();
+        private bool _updatingList;
+
+        public ProcessSelectionDialog(IEnumerable<string> selectedProcessNames)
+        {
+            _checkedProcessNames = selectedProcessNames
+                .Select(NormalizeProcessName)
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            Text = "从进程中选择";
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = false;
+            MaximizeBox = true;
+            ShowInTaskbar = false;
+            Size = new Size(760, 520);
+            MinimumSize = new Size(620, 380);
+
+            BuildUi();
+            LoadProcesses();
+        }
+
+        public string[] SelectedProcessNames { get; private set; } = Array.Empty<string>();
+
+        private void BuildUi()
+        {
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                Padding = new Padding(8)
+            };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            Controls.Add(root);
+
+            var filterRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3
+            };
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+            filterRow.Controls.Add(MakeLabel("筛选"), 0, 0);
+            _filterText.Dock = DockStyle.Fill;
+            _filterText.TextChanged += (_, _) => ApplyFilter();
+            filterRow.Controls.Add(_filterText, 1, 0);
+            _refreshButton.Text = "刷新";
+            _refreshButton.Dock = DockStyle.Fill;
+            _refreshButton.Click += (_, _) => LoadProcesses();
+            filterRow.Controls.Add(_refreshButton, 2, 0);
+            root.Controls.Add(filterRow, 0, 0);
+
+            _processList.Dock = DockStyle.Fill;
+            _processList.View = View.Details;
+            _processList.CheckBoxes = true;
+            _processList.FullRowSelect = true;
+            _processList.GridLines = true;
+            _processList.HideSelection = false;
+            _processList.ShowGroups = true;
+            _processList.Groups.AddRange(new[] { _applicationGroup, _backgroundGroup });
+            _processList.Columns.Add("进程名", 150);
+            _processList.Columns.Add("PID", 70);
+            _processList.Columns.Add("窗口标题", 220);
+            _processList.Columns.Add("路径", 280);
+            _processList.ItemChecked += ProcessListItemChecked;
+            root.Controls.Add(_processList, 0, 1);
+
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft
+            };
+
+            _okButton.Text = "确定";
+            _okButton.Width = 82;
+            _okButton.Height = 30;
+            _okButton.Click += (_, _) => AcceptSelection();
+            AcceptButton = _okButton;
+            buttons.Controls.Add(_okButton);
+
+            var cancelButton = new Button
+            {
+                Text = "取消",
+                Width = 82,
+                Height = 30,
+                DialogResult = DialogResult.Cancel
+            };
+            CancelButton = cancelButton;
+            buttons.Controls.Add(cancelButton);
+            root.Controls.Add(buttons, 0, 2);
+        }
+
+        private void LoadProcesses()
+        {
+            CaptureVisibleSelection();
+            _processes.Clear();
+
+            foreach (var process in Process.GetProcesses())
+            {
+                using (process)
+                {
+                    try
+                    {
+                        if (process.Id == Environment.ProcessId)
+                        {
+                            continue;
+                        }
+
+                        var item = TryCreateProcessListItem(process);
+                        if (item is not null)
+                        {
+                            _processes.Add(item);
+                        }
+                    }
+                    catch
+                    {
+                        // Some protected or exiting processes cannot be queried.
+                    }
+                }
+            }
+
+            _processes.Sort(static (left, right) =>
+            {
+                if (left.IsApplication != right.IsApplication)
+                {
+                    return left.IsApplication ? -1 : 1;
+                }
+
+                var nameCompare = string.Compare(left.ProcessName, right.ProcessName, StringComparison.OrdinalIgnoreCase);
+                return nameCompare != 0 ? nameCompare : left.ProcessId.CompareTo(right.ProcessId);
+            });
+
+            ApplyFilter();
+        }
+
+        private void ApplyFilter()
+        {
+            var filter = _filterText.Text.Trim();
+            _updatingList = true;
+            _processList.BeginUpdate();
+            try
+            {
+                _processList.Items.Clear();
+                foreach (var process in _processes)
+                {
+                    if (!MatchesFilter(process, filter))
+                    {
+                        continue;
+                    }
+
+                    var listItem = new ListViewItem(process.ProcessName)
+                    {
+                        Checked = _checkedProcessNames.Contains(process.ProcessName),
+                        Group = process.IsApplication ? _applicationGroup : _backgroundGroup,
+                        Tag = process
+                    };
+                    listItem.SubItems.Add(process.ProcessId.ToString());
+                    listItem.SubItems.Add(process.WindowTitle);
+                    listItem.SubItems.Add(process.ExecutablePath);
+                    _processList.Items.Add(listItem);
+                }
+            }
+            finally
+            {
+                _processList.EndUpdate();
+                _updatingList = false;
+            }
+        }
+
+        private void ProcessListItemChecked(object? sender, ItemCheckedEventArgs eventArgs)
+        {
+            if (_updatingList || eventArgs.Item.Tag is not ProcessListItem process)
+            {
+                return;
+            }
+
+            if (eventArgs.Item.Checked)
+            {
+                _checkedProcessNames.Add(process.ProcessName);
+            }
+            else
+            {
+                _checkedProcessNames.Remove(process.ProcessName);
+            }
+        }
+
+        private void CaptureVisibleSelection()
+        {
+            foreach (ListViewItem item in _processList.Items)
+            {
+                if (item.Tag is not ProcessListItem process)
+                {
+                    continue;
+                }
+
+                if (item.Checked)
+                {
+                    _checkedProcessNames.Add(process.ProcessName);
+                }
+                else
+                {
+                    _checkedProcessNames.Remove(process.ProcessName);
+                }
+            }
+        }
+
+        private void AcceptSelection()
+        {
+            CaptureVisibleSelection();
+            if (_checkedProcessNames.Count == 0)
+            {
+                MessageBox.Show(this, "请选择至少一个进程。", "从进程中选择", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            SelectedProcessNames = _checkedProcessNames
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        private static bool MatchesFilter(ProcessListItem process, string filter)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                return true;
+            }
+
+            return process.ProcessName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || process.ProcessId.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || process.WindowTitle.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || process.ExecutablePath.Contains(filter, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static ProcessListItem? TryCreateProcessListItem(Process process)
+        {
+            try
+            {
+                var processName = NormalizeProcessName(process.ProcessName);
+                if (string.IsNullOrWhiteSpace(processName))
+                {
+                    return null;
+                }
+
+                var windowTitle = SafeReadWindowTitle(process);
+                return new ProcessListItem(
+                    processName,
+                    process.Id,
+                    windowTitle,
+                    SafeReadExecutablePath(process),
+                    !string.IsNullOrWhiteSpace(windowTitle) || SafeHasMainWindow(process));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string NormalizeProcessName(string processName)
+        {
+            var fileName = Path.GetFileName(processName.Trim());
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return "";
+            }
+
+            return fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? fileName
+                : $"{fileName}.exe";
+        }
+
+        private static string SafeReadWindowTitle(Process process)
+        {
+            try
+            {
+                return process.MainWindowTitle ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string SafeReadExecutablePath(Process process)
+        {
+            try
+            {
+                return process.MainModule?.FileName ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static bool SafeHasMainWindow(Process process)
+        {
+            try
+            {
+                return process.MainWindowHandle != IntPtr.Zero;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private sealed record ProcessListItem(
+            string ProcessName,
+            int ProcessId,
+            string WindowTitle,
+            string ExecutablePath,
+            bool IsApplication);
     }
 
     private sealed class TargetApplicationPreset

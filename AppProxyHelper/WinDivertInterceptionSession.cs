@@ -35,7 +35,8 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         _connections = new TransparentConnectionTable(
             logger,
             _config.TrackChildProcesses,
-            _config.ExcludedChildProcessNames);
+            _config.ExcludedChildProcessNames,
+            loadedConfig.Value.TargetProcessNames);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
