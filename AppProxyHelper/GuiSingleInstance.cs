@@ -24,6 +24,7 @@ internal sealed class GuiSingleInstance : IDisposable
     private Form? _form;
     private Func<bool>? _canCloseForElevatedRestart;
     private Action? _closeForElevatedRestart;
+    private Action? _activateExistingInstance;
 
     private GuiSingleInstance(
         Mutex mutex,
@@ -75,7 +76,11 @@ internal sealed class GuiSingleInstance : IDisposable
         return new GuiSingleInstance(mutex, ownsMutex, activateEventName, closeEventName);
     }
 
-    public void Attach(Form form, Func<bool> canCloseForElevatedRestart, Action? closeForElevatedRestart = null)
+    public void Attach(
+        Form form,
+        Func<bool> canCloseForElevatedRestart,
+        Action? closeForElevatedRestart = null,
+        Action? activateExistingInstance = null)
     {
         if (!_ownsMutex)
         {
@@ -85,6 +90,7 @@ internal sealed class GuiSingleInstance : IDisposable
         _form = form;
         _canCloseForElevatedRestart = canCloseForElevatedRestart;
         _closeForElevatedRestart = closeForElevatedRestart;
+        _activateExistingInstance = activateExistingInstance;
         _activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _activateEventName);
         _closeEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _closeEventName);
         _stopSignal = new ManualResetEventSlim(false);
@@ -198,6 +204,12 @@ internal sealed class GuiSingleInstance : IDisposable
             return;
         }
 
+        if (_activateExistingInstance is not null)
+        {
+            _activateExistingInstance();
+            return;
+        }
+
         if (form.WindowState == FormWindowState.Minimized)
         {
             form.WindowState = FormWindowState.Normal;
@@ -271,27 +283,33 @@ internal sealed class GuiSingleInstance : IDisposable
             return false;
         }
 
-        foreach (var process in Process.GetProcessesByName(processName).OrderBy(static process => process.Id))
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        do
         {
-            using (process)
+            foreach (var process in Process.GetProcessesByName(processName).OrderBy(static process => process.Id))
             {
-                if (process.Id == Environment.ProcessId || !IsSameExecutable(process, executablePath))
+                using (process)
                 {
-                    continue;
-                }
+                    if (process.Id == Environment.ProcessId || !IsSameExecutable(process, executablePath))
+                    {
+                        continue;
+                    }
 
-                var windowHandle = process.MainWindowHandle;
-                if (windowHandle == IntPtr.Zero)
-                {
-                    continue;
-                }
+                    var windowHandle = process.MainWindowHandle;
+                    if (windowHandle == IntPtr.Zero)
+                    {
+                        continue;
+                    }
 
-                ShowWindow(windowHandle, SwRestore);
-                ShowWindow(windowHandle, SwShow);
-                SetForegroundWindow(windowHandle);
-                return true;
+                    ShowWindow(windowHandle, SwRestore);
+                    ShowWindow(windowHandle, SwShow);
+                    SetForegroundWindow(windowHandle);
+                    return true;
+                }
             }
-        }
+
+            Thread.Sleep(100);
+        } while (DateTime.UtcNow < deadline);
 
         return false;
     }

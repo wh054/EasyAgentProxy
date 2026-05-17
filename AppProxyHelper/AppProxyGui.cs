@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
@@ -8,33 +9,46 @@ namespace AppProxyHelper;
 
 public static class AppProxyGui
 {
-    public static void Run(string? configPath, bool autoRun)
+    public static void Run(string? configPath, bool autoRun, bool autoRepairEnvironment)
     {
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var singleInstance = GuiSingleInstance.Acquire(autoRun);
+        using var singleInstance = GuiSingleInstance.Acquire(autoRun || autoRepairEnvironment);
         if (!singleInstance.IsOwner)
         {
             return;
         }
 
-        var form = new AppProxyGuiForm(configPath, autoRun);
-        singleInstance.Attach(form, () => form.CanCloseForElevatedRestart, form.CloseForElevatedRestart);
+        var form = new AppProxyGuiForm(configPath, autoRun, autoRepairEnvironment);
+        singleInstance.Attach(
+            form,
+            () => form.CanCloseForElevatedRestart,
+            form.CloseForElevatedRestart,
+            form.RestoreFromTray);
         Application.Run(form);
     }
 }
 
 internal sealed class AppProxyGuiForm : Form
 {
+    private const int SwRestore = 9;
+    private enum ElevatedAction
+    {
+        None,
+        AutoRun,
+        RepairEnvironment
+    }
+
     private const int ErrorCancelled = 1223;
     private const int MainWindowWidth = 1040;
     private const int MainWindowHeight = 740;
-    private const int MainConfigBarHeight = 32;
     private const int MainActionBarHeight = 38;
-    private const int MainLogHeight = 112;
     private const int CompactRowHeight = 32;
+    private const int HomeProxyHeight = 74;
     private const int TargetSourceHeight = 146;
+    private const int ConfigGroupHeight = 74;
+    private const int EnvironmentRepairGroupHeight = 74;
     private const string ManualTargetPresetText = "手动选择";
 
     private readonly TextBox _configPathText = new();
@@ -82,6 +96,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly TextBox _logText = new();
     private readonly Label _statusLabel = new();
     private readonly Button _checkButton = new();
+    private readonly Button _environmentRepairButton = new();
     private readonly Button _runButton = new();
     private readonly Button _stopButton = new();
     private Button? _selectProcessButton;
@@ -95,7 +110,7 @@ internal sealed class AppProxyGuiForm : Form
 
     internal bool CanCloseForElevatedRestart => _operationCts is null;
 
-    public AppProxyGuiForm(string? initialConfigPath, bool autoRun)
+    public AppProxyGuiForm(string? initialConfigPath, bool autoRun, bool autoRepairEnvironment)
     {
         Text = "AppProxyHelper";
         StartPosition = FormStartPosition.CenterScreen;
@@ -121,8 +136,16 @@ internal sealed class AppProxyGuiForm : Form
         {
             LoadConfig(configPath);
         }
+        else
+        {
+            SetStatus("就绪。");
+        }
 
-        if (autoRun)
+        if (autoRepairEnvironment)
+        {
+            Shown += AutoRepairEnvironmentOnShown;
+        }
+        else if (autoRun)
         {
             Shown += AutoRunOnShown;
         }
@@ -212,7 +235,7 @@ internal sealed class AppProxyGuiForm : Form
         Hide();
     }
 
-    private void RestoreFromTray()
+    internal void RestoreFromTray()
     {
         if (InvokeRequired)
         {
@@ -220,14 +243,15 @@ internal sealed class AppProxyGuiForm : Form
             return;
         }
 
-        ShowInTaskbar = true;
-        Show();
         if (WindowState == FormWindowState.Minimized)
         {
             WindowState = FormWindowState.Normal;
         }
 
+        ShowInTaskbar = true;
+        Show();
         Activate();
+        NativeMethods.ShowWindow(Handle, SwRestore);
         BringToFront();
     }
 
@@ -244,32 +268,18 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 1,
             Padding = new Padding(8)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainConfigBarHeight));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainActionBarHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainLogHeight));
         Controls.Add(root);
 
-        root.Controls.Add(BuildConfigBar(), 0, 0);
-
         var tabs = new TabControl { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(BuildTargetTab());
+        tabs.TabPages.Add(BuildHomeTab());
+        tabs.TabPages.Add(BuildAdvancedTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
         tabs.TabPages.Add(BuildTransparentTab());
-        root.Controls.Add(tabs, 0, 1);
-
-        root.Controls.Add(BuildActionBar(), 0, 2);
-
-        _logText.Dock = DockStyle.Fill;
-        _logText.Multiline = true;
-        _logText.ReadOnly = true;
-        _logText.ScrollBars = ScrollBars.Vertical;
-        _logText.Font = new Font(FontFamily.GenericMonospace, 9);
-        _logText.Margin = new Padding(0);
-        root.Controls.Add(_logText, 0, 3);
+        root.Controls.Add(tabs, 0, 0);
     }
 
     private Control BuildConfigBar()
@@ -303,9 +313,75 @@ internal sealed class AppProxyGuiForm : Form
         return panel;
     }
 
-    private TabPage BuildTargetTab()
+    private TabPage BuildHomeTab()
     {
-        var page = new TabPage("目标/代理");
+        var page = new TabPage("首页");
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Padding = new Padding(6)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, TargetSourceHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, HomeProxyHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainActionBarHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        page.Controls.Add(root);
+
+        root.Controls.Add(BuildTargetSourceGroup(), 0, 0);
+        root.Controls.Add(BuildHomeProxyGroup(), 0, 1);
+        root.Controls.Add(BuildActionBar(), 0, 2);
+        root.Controls.Add(BuildLogGroup(), 0, 3);
+
+        return page;
+    }
+
+    private Control BuildHomeProxyGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "代理地址",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+
+        var table = MakeSingleColumnTable(1);
+        group.Controls.Add(table);
+        AddRow(table, 0, "代理地址", _proxyUriText);
+        return group;
+    }
+
+    private Control BuildLogGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "动态日志",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
+
+        var panel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(6, 4, 6, 6)
+        };
+
+        _logText.Dock = DockStyle.Fill;
+        _logText.Multiline = true;
+        _logText.ReadOnly = true;
+        _logText.ScrollBars = ScrollBars.Vertical;
+        _logText.Font = new Font(FontFamily.GenericMonospace, 9);
+        _logText.Margin = new Padding(0);
+
+        panel.Controls.Add(_logText);
+        group.Controls.Add(panel);
+        return group;
+    }
+
+    private TabPage BuildAdvancedTab()
+    {
+        var page = new TabPage("高级设置");
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -313,21 +389,33 @@ internal sealed class AppProxyGuiForm : Form
             RowCount = 2,
             Padding = new Padding(6)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, TargetSourceHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, ConfigGroupHeight));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(root);
 
-        root.Controls.Add(BuildTargetSourceGroup(), 0, 0);
-        root.Controls.Add(BuildTargetOptionsGroup(), 0, 1);
-
+        root.Controls.Add(BuildConfigGroup(), 0, 0);
+        root.Controls.Add(BuildAdvancedOptionsGroup(), 0, 1);
         return page;
+    }
+
+    private Control BuildConfigGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "配置文件",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+
+        group.Controls.Add(BuildConfigBar());
+        return group;
     }
 
     private Control BuildTargetSourceGroup()
     {
         var group = new GroupBox
         {
-            Text = "目标来源",
+            Text = "目标应用",
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 6)
         };
@@ -347,16 +435,16 @@ internal sealed class AppProxyGuiForm : Form
         return group;
     }
 
-    private Control BuildTargetOptionsGroup()
+    private Control BuildAdvancedOptionsGroup()
     {
         var group = new GroupBox
         {
-            Text = "代理与运行",
+            Text = "运行与日志",
             Dock = DockStyle.Fill,
             Margin = new Padding(0)
         };
 
-        var table = MakeSingleColumnTable(8);
+        var table = MakeSingleColumnTable(7);
         group.Controls.Add(table);
 
         ConfigureCombo(_modeCombo, "Transparent", "Environment");
@@ -365,12 +453,11 @@ internal sealed class AppProxyGuiForm : Form
 
         AddRow(table, 1, "启动参数", _targetArgumentsText);
         AddRow(table, 2, "工作目录", _workingDirectoryText, MakeBrowseButton(() => BrowseFolder(_workingDirectoryText)));
-        AddRow(table, 3, "代理 URI", _proxyUriText);
-        AddRow(table, 4, "NO_PROXY", _noProxyText);
-        AddRow(table, 5, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
+        AddRow(table, 3, "NO_PROXY", _noProxyText);
+        AddRow(table, 4, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
 
         ConfigureCombo(_minimumLogLevelCombo, "Debug", "Information", "Warning", "Error");
-        AddRow(table, 6, "日志级别", _minimumLogLevelCombo);
+        AddRow(table, 5, "日志级别", _minimumLogLevelCombo);
 
         var checks = new FlowLayoutPanel
         {
@@ -392,16 +479,36 @@ internal sealed class AppProxyGuiForm : Form
             _runDiagnosticsCheck,
             _abortOnDiagnosticsFailCheck
         });
-        AddWideRow(table, 7, "运行选项", checks);
+        AddWideRow(table, 6, "运行选项", checks);
 
         return group;
     }
 
     private TabPage BuildDiagnosticsTab()
     {
-        var page = new TabPage("诊断");
+        var page = new TabPage("诊断与修复");
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(6)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, EnvironmentRepairGroupHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        page.Controls.Add(root);
+
+        root.Controls.Add(BuildEnvironmentRepairGroup(), 0, 0);
+
+        var group = new GroupBox
+        {
+            Text = "代理诊断",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
         var table = MakeSingleColumnTable(5);
-        page.Controls.Add(table);
+        group.Controls.Add(table);
+        root.Controls.Add(group, 0, 1);
 
         ConfigureNumber(_tcpConnectTimeoutNumber, 100, 120000, 3000);
         AddRow(table, 0, "TCP 超时 ms", _tcpConnectTimeoutNumber);
@@ -417,6 +524,38 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureNumber(_connectTestPortNumber, 1, 65535, 443);
         AddRow(table, 4, "测试端口", _connectTestPortNumber);
         return page;
+    }
+
+    private Control BuildEnvironmentRepairGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "WinDivert 环境",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(6)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _environmentRepairButton.Text = "环境修复";
+        _environmentRepairButton.Dock = DockStyle.Fill;
+        _environmentRepairButton.Click += async (_, _) => await RunOperationAsync(
+            "环境修复",
+            RunEnvironmentRepairAsync,
+            ElevatedAction.RepairEnvironment);
+        panel.Controls.Add(_environmentRepairButton, 0, 0);
+
+        group.Controls.Add(panel);
+        return group;
     }
 
     private TabPage BuildTransparentTab()
@@ -512,7 +651,7 @@ internal sealed class AppProxyGuiForm : Form
 
         _runButton.Text = "启动";
         _runButton.Dock = DockStyle.Fill;
-        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync, requestElevation: true);
+        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync, ElevatedAction.AutoRun);
         panel.Controls.Add(_runButton, 1, 0);
 
         _stopButton.Text = "停止";
@@ -716,13 +855,19 @@ internal sealed class AppProxyGuiForm : Form
     private async void AutoRunOnShown(object? sender, EventArgs eventArgs)
     {
         Shown -= AutoRunOnShown;
-        await RunOperationAsync("启动", RunTargetAsync, requestElevation: true);
+        await RunOperationAsync("启动", RunTargetAsync, ElevatedAction.AutoRun);
+    }
+
+    private async void AutoRepairEnvironmentOnShown(object? sender, EventArgs eventArgs)
+    {
+        Shown -= AutoRepairEnvironmentOnShown;
+        await RunOperationAsync("环境修复", RunEnvironmentRepairAsync, ElevatedAction.None);
     }
 
     private async Task RunOperationAsync(
         string name,
         Func<LoadedConfig, AppLogger, CancellationToken, Task<int>> operation,
-        bool requestElevation = false)
+        ElevatedAction elevatedAction = ElevatedAction.None)
     {
         if (_operationCts is not null || _elevationInProgress)
         {
@@ -748,9 +893,9 @@ internal sealed class AppProxyGuiForm : Form
             return;
         }
 
-        if (requestElevation && ShouldRequestElevation(loaded.Value))
+        if (elevatedAction != ElevatedAction.None && ShouldRequestElevation(loaded.Value))
         {
-            RequestElevatedAutoRun(loaded.ConfigPath);
+            RequestElevatedAction(loaded.ConfigPath, elevatedAction);
             return;
         }
 
@@ -796,6 +941,14 @@ internal sealed class AppProxyGuiForm : Form
         return ok ? 0 : 3;
     }
 
+    private static Task<int> RunEnvironmentRepairAsync(
+        LoadedConfig loadedConfig,
+        AppLogger logger,
+        CancellationToken cancellationToken)
+    {
+        return WinDivertEnvironmentRepair.CheckAndRepairAsync(loadedConfig, logger, cancellationToken);
+    }
+
     private static async Task<int> RunTargetAsync(
         LoadedConfig loadedConfig,
         AppLogger logger,
@@ -823,7 +976,7 @@ internal sealed class AppProxyGuiForm : Form
         return await launcher.RunAsync(cancellationToken);
     }
 
-    private void RequestElevatedAutoRun(string configPath)
+    private void RequestElevatedAction(string configPath, ElevatedAction action)
     {
         if (_elevationInProgress)
         {
@@ -852,7 +1005,14 @@ internal sealed class AppProxyGuiForm : Form
             startInfo.ArgumentList.Add("ui");
             startInfo.ArgumentList.Add("--config");
             startInfo.ArgumentList.Add(configPath);
-            startInfo.ArgumentList.Add("--autorun");
+            if (action == ElevatedAction.AutoRun)
+            {
+                startInfo.ArgumentList.Add("--autorun");
+            }
+            else if (action == ElevatedAction.RepairEnvironment)
+            {
+                startInfo.ArgumentList.Add("--repair-env");
+            }
 
             if (Process.Start(startInfo) is null)
             {
@@ -861,7 +1021,10 @@ internal sealed class AppProxyGuiForm : Form
 
             BeginInvoke(new Action(Close));
 
-            AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Information] 已请求管理员权限，新窗口将自动启动目标应用。");
+            var actionText = action == ElevatedAction.RepairEnvironment
+                ? "自动执行环境修复"
+                : "自动启动目标应用";
+            AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Information] 已请求管理员权限，新窗口将{actionText}。");
             SetStatus("已请求管理员权限，请在新窗口查看运行状态。");
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelled)
@@ -903,6 +1066,7 @@ internal sealed class AppProxyGuiForm : Form
     private void SetOperationState(bool running, string name)
     {
         _checkButton.Enabled = !running;
+        _environmentRepairButton.Enabled = !running;
         _runButton.Enabled = !running;
         _stopButton.Enabled = running;
         if (running)
@@ -914,6 +1078,7 @@ internal sealed class AppProxyGuiForm : Form
     private void SetElevationRequestState(bool pending)
     {
         _checkButton.Enabled = !pending && _operationCts is null;
+        _environmentRepairButton.Enabled = !pending && _operationCts is null;
         _runButton.Enabled = !pending && _operationCts is null;
         _stopButton.Enabled = _operationCts is not null;
         if (pending)
@@ -930,14 +1095,7 @@ internal sealed class AppProxyGuiForm : Form
             return;
         }
 
-        if (WindowState == FormWindowState.Minimized)
-        {
-            WindowState = FormWindowState.Normal;
-        }
-
-        Show();
-        Activate();
-        BringToFront();
+        RestoreFromTray();
     }
 
     private void RefreshModeState()
@@ -2114,5 +2272,11 @@ internal sealed class AppProxyGuiForm : Form
         {
             return Name;
         }
+    }
+
+    private static class NativeMethods
+    {
+        [DllImport("user32.dll")]
+        internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     }
 }

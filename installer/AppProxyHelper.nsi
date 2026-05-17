@@ -1,0 +1,148 @@
+!ifndef PRODUCT_VERSION
+  !error "PRODUCT_VERSION is required."
+!endif
+
+!ifndef PUBLISH_DIR
+  !error "PUBLISH_DIR is required."
+!endif
+
+!ifndef OUTPUT_FILE
+  !error "OUTPUT_FILE is required."
+!endif
+
+Unicode true
+
+!include "MUI2.nsh"
+!include "x64.nsh"
+
+!define PRODUCT_NAME "ProxyKing AppProxyHelper"
+!define COMPANY_NAME "ProxyKing"
+!define APP_EXE "AppProxyHelper.exe"
+!define UNINSTALL_EXE "uninstall.exe"
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyKing AppProxyHelper"
+
+Name "${PRODUCT_NAME}"
+OutFile "${OUTPUT_FILE}"
+InstallDir "$PROGRAMFILES64\ProxyKing\AppProxyHelper"
+InstallDirRegKey HKLM "Software\ProxyKing\AppProxyHelper" "InstallDir"
+RequestExecutionLevel admin
+
+SetCompressor /SOLID lzma
+BrandingText "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+ShowInstDetails show
+ShowUninstDetails show
+
+VIProductVersion "${PRODUCT_VERSION}.0"
+VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT_NAME}"
+VIAddVersionKey /LANG=2052 "CompanyName" "${COMPANY_NAME}"
+VIAddVersionKey /LANG=2052 "FileDescription" "${PRODUCT_NAME} Installer"
+VIAddVersionKey /LANG=2052 "FileVersion" "${PRODUCT_VERSION}"
+VIAddVersionKey /LANG=2052 "ProductVersion" "${PRODUCT_VERSION}"
+VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (C) ${COMPANY_NAME}"
+
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_UNPAGE_FINISH
+
+!insertmacro MUI_LANGUAGE "SimpChinese"
+
+Function EnsureAdmin
+  UserInfo::GetAccountType
+  Pop $0
+
+  ${If} $0 != "Admin"
+    ClearErrors
+    ExecShell "runas" "$EXEPATH" "$CMDLINE"
+    ${If} ${Errors}
+      MessageBox MB_ICONSTOP "Administrator permission is required. Please approve the UAC prompt or run this setup as administrator."
+    ${EndIf}
+    Quit
+  ${EndIf}
+FunctionEnd
+
+Function .onInit
+  Call EnsureAdmin
+
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "ProxyKing AppProxyHelper requires 64-bit Windows."
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function un.EnsureAdmin
+  UserInfo::GetAccountType
+  Pop $0
+
+  ${If} $0 != "Admin"
+    ClearErrors
+    ExecShell "runas" "$EXEPATH" "$CMDLINE"
+    ${If} ${Errors}
+      MessageBox MB_ICONSTOP "Administrator permission is required. Please approve the UAC prompt or run uninstall.exe as administrator."
+    ${EndIf}
+    Quit
+  ${EndIf}
+FunctionEnd
+
+Function un.onInit
+  Call un.EnsureAdmin
+FunctionEnd
+
+Section "" SecMain
+  SectionIn RO
+
+  SetShellVarContext all
+  SetRegView 64
+
+  SetOutPath "$INSTDIR"
+  File "/oname=${APP_EXE}" "${PUBLISH_DIR}\${APP_EXE}"
+  File "/oname=WinDivert.dll" "${PUBLISH_DIR}\WinDivert.dll"
+  File "/oname=WinDivert64.sys" "${PUBLISH_DIR}\WinDivert64.sys"
+  File "/oname=app-proxy.example.json" "${PUBLISH_DIR}\app-proxy.example.json"
+
+  WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
+
+  CreateDirectory "$SMPROGRAMS\ProxyKing AppProxyHelper"
+  CreateShortcut "$SMPROGRAMS\ProxyKing AppProxyHelper\ProxyKing AppProxyHelper.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
+  CreateShortcut "$SMPROGRAMS\ProxyKing AppProxyHelper\Uninstall ProxyKing AppProxyHelper.lnk" "$INSTDIR\${UNINSTALL_EXE}"
+  CreateShortcut "$DESKTOP\ProxyKing AppProxyHelper.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
+
+  WriteRegStr HKLM "Software\ProxyKing\AppProxyHelper" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "${COMPANY_NAME}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\${UNINSTALL_EXE}"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\${UNINSTALL_EXE}" /S'
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
+SectionEnd
+
+Section "Uninstall"
+  SetShellVarContext all
+  SetRegView 64
+
+  Delete "$DESKTOP\ProxyKing AppProxyHelper.lnk"
+  Delete "$SMPROGRAMS\ProxyKing AppProxyHelper\ProxyKing AppProxyHelper.lnk"
+  Delete "$SMPROGRAMS\ProxyKing AppProxyHelper\Uninstall ProxyKing AppProxyHelper.lnk"
+  RMDir "$SMPROGRAMS\ProxyKing AppProxyHelper"
+
+  Delete "$INSTDIR\app-proxy.example.json"
+  Delete "$INSTDIR\WinDivert64.sys"
+  Delete "$INSTDIR\WinDivert.dll"
+  Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\${UNINSTALL_EXE}"
+  RMDir "$INSTDIR"
+  RMDir "$PROGRAMFILES64\ProxyKing"
+
+  DeleteRegKey HKLM "${UNINSTALL_KEY}"
+  DeleteRegKey HKLM "Software\ProxyKing\AppProxyHelper"
+SectionEnd

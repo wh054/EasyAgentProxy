@@ -17,6 +17,7 @@ public static class Cli
             {
                 "init" => InitializeConfig(args),
                 "check" => await CheckAsync(args),
+                "repair-env" => await RepairEnvironmentAsync(args),
                 "run" => await RunTargetAsync(args),
                 _ => UnknownCommand(command)
             };
@@ -57,6 +58,18 @@ public static class Cli
 
         var ok = await ProxyDiagnostics.CheckAsync(loadedConfig.Value, logger, CancellationToken.None);
         return ok ? 0 : 3;
+    }
+
+    private static Task<int> RepairEnvironmentAsync(string[] args)
+    {
+        var loadedConfig = LoadRequiredConfig(args);
+        using var logger = AppLogger.Create(loadedConfig);
+
+        logger.Info($"配置文件: {loadedConfig.ConfigPath}");
+        logger.Info($"日志文件: {logger.LogFilePath}");
+        logger.Info($"运行模式: {loadedConfig.Value.Mode}");
+
+        return WinDivertEnvironmentRepair.CheckAndRepairAsync(loadedConfig, logger, CancellationToken.None);
     }
 
     private static async Task<int> RunTargetAsync(string[] args)
@@ -148,8 +161,9 @@ public static class Cli
             用法:
               AppProxyHelper init [--config app-proxy.json]
               AppProxyHelper check --config app-proxy.json
+              AppProxyHelper repair-env --config app-proxy.json
               AppProxyHelper run --config app-proxy.json
-              AppProxyHelper ui [--config app-proxy.json]
+              AppProxyHelper ui [--config app-proxy.json] [--repair-env]
 
             说明:
               Transparent 是默认模式。它使用 WinDivert 驱动按目标 PID 分类连接，并把 IPv4 TCP

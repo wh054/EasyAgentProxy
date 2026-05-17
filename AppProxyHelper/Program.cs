@@ -7,7 +7,10 @@ internal static class Program
     {
         if (args.Length == 0 || args[0].Equals("ui", StringComparison.OrdinalIgnoreCase))
         {
-            AppProxyGui.Run(GetGuiConfigPath(args), HasOption(args, "--autorun"));
+            AppProxyGui.Run(
+                GetGuiConfigPath(args),
+                HasOption(args, "--autorun"),
+                HasOption(args, "--repair-env"));
             return 0;
         }
 

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -7,6 +8,7 @@ namespace AppProxyHelper;
 internal sealed class WinDivertInterceptionSession : IInterceptionSession
 {
     private const uint ErrorOperationAborted = 995;
+    private const int ErrorServiceDoesNotExist = 1060;
     private const int DefaultPacketBufferSize = 0xFFFF;
     private static readonly TimeSpan PumpStopTimeout = TimeSpan.FromSeconds(3);
 
@@ -77,11 +79,10 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
 
         _native = new WinDivertNative(driverPath);
         var transportFilter = _config.CaptureUdp ? "(tcp or udp)" : "tcp";
-        _flowHandle = _native.Open(transportFilter, WinDivertLayer.Flow, (short)_config.WinDivertPriority, WinDivertFlags.Sniff | WinDivertFlags.RecvOnly);
-        _socketHandle = _native.Open(transportFilter, WinDivertLayer.Socket, (short)_config.WinDivertPriority, WinDivertFlags.Sniff | WinDivertFlags.RecvOnly);
-        _networkHandle = _native.Open($"outbound and ip and {transportFilter} and !impostor", WinDivertLayer.Network, (short)_config.WinDivertPriority, 0);
+        var networkFilter = $"outbound and ip and {transportFilter} and !impostor";
+        OpenWinDivertHandles(transportFilter, networkFilter);
 
-        ConfigureQueue(_networkHandle);
+        ConfigureQueue(_networkHandle ?? throw new InvalidOperationException("WinDivert network 句柄未打开。"));
 
         _tcpProxy = new TransparentTcpProxyServer(
             redirectAddress,
@@ -126,6 +127,68 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         _logger.Info($"WinDivert 透明拦截已启动。当前实现支持目标进程 {protocols} 透明代理。");
 
         return Task.CompletedTask;
+    }
+
+    private void OpenWinDivertHandles(string transportFilter, string networkFilter)
+    {
+        if (_native is null)
+        {
+            throw new ObjectDisposedException(nameof(WinDivertNative));
+        }
+
+        _logger.Info("优先尝试连接系统已有 WinDivert 驱动。");
+        try
+        {
+            OpenWinDivertHandlesCore(transportFilter, networkFilter, WinDivertFlags.NoInstall);
+            _logger.Info("已连接系统已有 WinDivert 驱动。");
+            return;
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorServiceDoesNotExist)
+        {
+            DisposeWinDivertHandles();
+            _logger.Info("系统中未检测到已有 WinDivert 驱动，改用应用目录自带驱动。");
+        }
+        catch (Win32Exception ex)
+        {
+            DisposeWinDivertHandles();
+            throw new InvalidOperationException(
+                $"检测到系统已有 WinDivert 驱动，但当前无法使用。为避免影响其他软件，程序不会自动覆盖或卸载该驱动。请先运行环境修复查看原因，并在确认影响范围后再处理现有 WinDivert 服务。Win32Error={ex.NativeErrorCode}: {WinDivertNative.ExplainError(ex.NativeErrorCode)}",
+                ex);
+        }
+
+        OpenWinDivertHandlesCore(transportFilter, networkFilter, 0);
+        _logger.Info("已使用应用目录自带 WinDivert 驱动。");
+    }
+
+    private void OpenWinDivertHandlesCore(string transportFilter, string networkFilter, ulong extraFlags)
+    {
+        if (_native is null)
+        {
+            throw new ObjectDisposedException(nameof(WinDivertNative));
+        }
+
+        try
+        {
+            var classificationFlags = WinDivertFlags.Sniff | WinDivertFlags.RecvOnly | extraFlags;
+            _flowHandle = _native.Open(transportFilter, WinDivertLayer.Flow, (short)_config.WinDivertPriority, classificationFlags);
+            _socketHandle = _native.Open(transportFilter, WinDivertLayer.Socket, (short)_config.WinDivertPriority, classificationFlags);
+            _networkHandle = _native.Open(networkFilter, WinDivertLayer.Network, (short)_config.WinDivertPriority, extraFlags);
+        }
+        catch
+        {
+            DisposeWinDivertHandles();
+            throw;
+        }
+    }
+
+    private void DisposeWinDivertHandles()
+    {
+        _networkHandle?.Dispose();
+        _flowHandle?.Dispose();
+        _socketHandle?.Dispose();
+        _networkHandle = null;
+        _flowHandle = null;
+        _socketHandle = null;
     }
 
     public void SetTargetProcess(int processId, string executablePath)
@@ -310,7 +373,7 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         TrySetParam(handle, WinDivertParam.QueueSize, (ulong)Math.Max(1, _config.QueueSizeBytes));
     }
 
-    private static string? ResolveWinDivertDriverPath(string configuredPath, string configBaseDirectory)
+    internal static string? ResolveWinDivertDriverPath(string configuredPath, string configBaseDirectory)
     {
         foreach (var candidate in GetWinDivertDriverCandidates(configuredPath, configBaseDirectory))
         {

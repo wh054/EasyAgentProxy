@@ -2,6 +2,8 @@ bin/
 obj/
 .dotnet/
 .nuget/
+.wix/
+.tools/
 .appdata/
 .localappdata/
 logs/

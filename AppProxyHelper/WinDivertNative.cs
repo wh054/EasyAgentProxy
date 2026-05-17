@@ -37,6 +37,7 @@ internal static class WinDivertFlags
 {
     public const ulong Sniff = 0x0001;
     public const ulong RecvOnly = 0x0004;
+    public const ulong NoInstall = 0x0010;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -230,6 +231,7 @@ internal sealed class WinDivertNative : IDisposable
             87 => "WinDivert 参数或过滤表达式无效。",
             577 => "驱动签名无效或被系统策略拒绝。",
             654 => "系统中已有不兼容版本的 WinDivert 驱动。",
+            1058 => "WinDivert 服务已被禁用，或关联的驱动设备没有启动。请运行环境修复，或将 WinDivert 服务启动类型改为手动。",
             1060 => "WinDivert 服务不存在，且当前模式未安装驱动。",
             1275 => "驱动被系统或安全软件阻止。",
             1753 => "Base Filtering Engine 服务不可用。",

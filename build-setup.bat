@@ -46,14 +46,12 @@ if not "%ARG_RID%"=="" set "RID=%ARG_RID%"
 if not "%ARG_CONFIGURATION%"=="" set "CONFIGURATION=%ARG_CONFIGURATION%"
 
 if /i not "%RID%"=="win-x64" (
-    echo ERROR: MSI packaging currently supports win-x64 only.
+    echo ERROR: Setup packaging currently supports win-x64 only.
     goto fail
 )
 
 set "PUBLISH_DIR=%ROOT%dist\AppProxyHelper-%RID%"
-set "MSI_DIR=%ROOT%dist\installer"
-set "DOTNET_EXE=dotnet"
-if exist "%ROOT%.dotnet\dotnet.exe" set "DOTNET_EXE=%ROOT%.dotnet\dotnet.exe"
+set "SETUP_DIR=%ROOT%dist\installer"
 
 pushd "%ROOT%" >nul
 if errorlevel 1 goto fail
@@ -61,16 +59,16 @@ if errorlevel 1 goto fail
 call :load_version
 if errorlevel 1 goto fail
 
-set "MSI_PATH=%MSI_DIR%\ProxyKing-AppProxyHelper-%PRODUCT_VERSION%-%RID%.msi"
+set "SETUP_PATH=%SETUP_DIR%\ProxyKing-AppProxyHelper-%PRODUCT_VERSION%-%RID%-setup.exe"
 
 echo.
-echo ProxyKing AppProxyHelper MSI build
+echo ProxyKing AppProxyHelper setup build
 echo Version : %PRODUCT_VERSION%
 echo Next    : %NEXT_PRODUCT_VERSION%
 echo Bump    : %BUMP_KIND%
 echo Runtime : %RID%
 echo Config  : %CONFIGURATION%
-echo Output  : %MSI_PATH%
+echo Output  : %SETUP_PATH%
 echo.
 
 set "NO_PAUSE=1"
@@ -97,29 +95,29 @@ if not exist "%PUBLISH_DIR%\app-proxy.example.json" (
     goto fail
 )
 
-if not exist "%MSI_DIR%" mkdir "%MSI_DIR%"
+if not exist "%SETUP_DIR%" mkdir "%SETUP_DIR%"
 if errorlevel 1 goto fail
 
-echo Restoring WiX local tool...
-"%DOTNET_EXE%" tool restore --add-source "%NUGET_SOURCE%"
+echo Preparing NSIS...
+set "MAKENSIS_EXE="
+for /f "delims=" %%I in ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\prepare-nsis.ps1" -Root "%ROOT_ARG%"') do set "MAKENSIS_EXE=%%I"
 if errorlevel 1 goto fail
 
-echo Restoring WiX UI extension...
-"%DOTNET_EXE%" wix extension add WixToolset.UI.wixext/6.0.2
+if not exist "%MAKENSIS_EXE%" (
+    echo ERROR: makensis.exe was not found.
+    goto fail
+)
+
+echo Building setup installer...
+"%MAKENSIS_EXE%" /V2 ^
+    "/DPRODUCT_VERSION=%PRODUCT_VERSION%" ^
+    "/DPUBLISH_DIR=%PUBLISH_DIR%" ^
+    "/DOUTPUT_FILE=%SETUP_PATH%" ^
+    "%ROOT%installer\AppProxyHelper.nsi"
 if errorlevel 1 goto fail
 
-echo Building MSI...
-"%DOTNET_EXE%" wix build "%ROOT%installer\AppProxyHelper.wxs" ^
-    -arch x64 ^
-    -ext WixToolset.UI.wixext ^
-    -culture zh-CN ^
-    -d "PublishDir=%PUBLISH_DIR%" ^
-    -d "ProductVersion=%PRODUCT_VERSION%" ^
-    -o "%MSI_PATH%"
-if errorlevel 1 goto fail
-
-if not exist "%MSI_PATH%" (
-    echo ERROR: MSI build finished but output was not found.
+if not exist "%SETUP_PATH%" (
+    echo ERROR: setup build finished but output was not found.
     goto fail
 )
 
@@ -128,13 +126,13 @@ if errorlevel 1 goto fail
 
 echo.
 echo Done.
-echo MSI: %MSI_PATH%
+echo Setup: %SETUP_PATH%
 echo Next version: %NEXT_PRODUCT_VERSION%
 goto end
 
 :fail
 echo.
-echo MSI build failed.
+echo Setup build failed.
 popd >nul 2>nul
 if /i not "%NO_PAUSE%"=="1" pause
 exit /b 1
@@ -168,10 +166,10 @@ exit /b 1
 
 :print_usage
 echo Usage:
-echo   build-msi.bat
-echo   build-msi.bat patch [win-x64] [Release]
-echo   build-msi.bat minor [win-x64] [Release]
-echo   build-msi.bat major [win-x64] [Release]
+echo   build-setup.bat
+echo   build-setup.bat patch [win-x64] [Release]
+echo   build-setup.bat minor [win-x64] [Release]
+echo   build-setup.bat major [win-x64] [Release]
 echo.
 echo Version selection:
 echo   patch  fixes, packaging-only changes, or small compatible updates
@@ -179,7 +177,7 @@ echo   minor  new compatible functionality
 echo   major  breaking or migration-requiring changes
 echo.
 echo The script never accepts a manual version number. It reads installer\version.txt
-echo and advances it only after a successful MSI build.
+echo and advances it only after a successful setup build.
 exit /b 0
 
 :load_version
@@ -207,7 +205,7 @@ for /f "delims=0123456789" %%A in ("%VERSION_MAJOR%") do set "VERSION_INVALID=1"
 for /f "delims=0123456789" %%A in ("%VERSION_MINOR%") do set "VERSION_INVALID=1"
 for /f "delims=0123456789" %%A in ("%VERSION_PATCH%") do set "VERSION_INVALID=1"
 if not "%VERSION_INVALID%"=="" (
-    echo ERROR: Invalid MSI version in %VERSION_FILE%: %PRODUCT_VERSION%
+    echo ERROR: Invalid setup version in %VERSION_FILE%: %PRODUCT_VERSION%
     echo Expected a numeric version like 1.0.0.
     exit /b 1
 )
