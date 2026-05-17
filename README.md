@@ -30,7 +30,7 @@ dotnet run --project .\AppProxyHelper -- ui --config .\app-proxy.json
 
 也可以直接运行程序不带参数打开界面。界面中的设置会读写同一份 JSON 配置文件。
 
-在 UI 中使用 `Transparent` 模式启动时，如果当前进程不是管理员权限，程序会先保存配置并主动弹出 UAC，请求管理员权限后在新窗口自动继续启动目标应用。
+打开 UI 时，如果当前进程不是管理员权限，程序会立即弹出 UAC 并用管理员权限重新启动界面。这样使用 `Transparent` 模式时不需要等到点击“启动”才请求权限。
 
 编辑 `app-proxy.json`：
 

@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net7.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -11,6 +11,7 @@
     <RootNamespace>AppProxyHelper</RootNamespace>
     <Product>EasyProxy</Product>
     <Title>EasyProxy</Title>
+    <Version>1.1.1</Version>
     <ApplicationIcon>Assets\EasyProxyAppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 

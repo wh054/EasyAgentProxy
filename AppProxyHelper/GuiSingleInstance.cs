@@ -40,7 +40,7 @@ internal sealed class GuiSingleInstance : IDisposable
 
     public bool IsOwner => _ownsMutex;
 
-    public static GuiSingleInstance Acquire(bool autoRun)
+    public static GuiSingleInstance Acquire(bool allowElevatedTakeover)
     {
         var executablePath = GetExecutablePath();
         var instanceKey = BuildInstanceKey(executablePath);
@@ -61,7 +61,7 @@ internal sealed class GuiSingleInstance : IDisposable
         }
 
         var ownsMutex = TryWait(mutex, TimeSpan.Zero);
-        if (!ownsMutex && autoRun && IsAdministrator())
+        if (!ownsMutex && allowElevatedTakeover && IsAdministrator())
         {
             SignalEvent(closeEventName);
             ownsMutex = TryWait(mutex, TimeSpan.FromSeconds(8));

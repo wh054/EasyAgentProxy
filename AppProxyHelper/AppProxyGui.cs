@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
@@ -9,12 +10,12 @@ namespace AppProxyHelper;
 
 public static class AppProxyGui
 {
-    public static void Run(string? configPath, bool autoRun, bool autoRepairEnvironment)
+    public static void Run(string? configPath, bool autoRun, bool autoRepairEnvironment, bool elevatedStartup)
     {
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var singleInstance = GuiSingleInstance.Acquire(autoRun || autoRepairEnvironment);
+        using var singleInstance = GuiSingleInstance.Acquire(autoRun || autoRepairEnvironment || elevatedStartup);
         if (!singleInstance.IsOwner)
         {
             return;
@@ -101,6 +102,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly Button _runButton = new();
     private readonly Button _stopButton = new();
     private Button? _selectProcessButton;
+    private readonly MenuStrip _mainMenu = new();
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly List<TargetApplicationPreset> _targetPresets = new();
@@ -269,18 +271,72 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 1,
-            Padding = new Padding(8)
+            RowCount = 2,
+            Padding = new Padding(0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
+
+        root.Controls.Add(BuildMainMenu(), 0, 0);
+
+        var content = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            Padding = new Padding(8)
+        };
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildHomeTab());
         tabs.TabPages.Add(BuildAdvancedTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
         tabs.TabPages.Add(BuildTransparentTab());
-        root.Controls.Add(tabs, 0, 0);
+        content.Controls.Add(tabs);
+        root.Controls.Add(content, 0, 1);
+    }
+
+    private MenuStrip BuildMainMenu()
+    {
+        _mainMenu.Dock = DockStyle.Top;
+        _mainMenu.Margin = new Padding(0);
+
+        var helpMenu = new ToolStripMenuItem("帮助");
+        var aboutItem = new ToolStripMenuItem("关于 EasyProxy");
+        aboutItem.Click += (_, _) => ShowAboutDialog();
+
+        helpMenu.DropDownItems.Add(aboutItem);
+        _mainMenu.Items.Add(helpMenu);
+        MainMenuStrip = _mainMenu;
+
+        return _mainMenu;
+    }
+
+    private void ShowAboutDialog()
+    {
+        MessageBox.Show(
+            this,
+            $"EasyProxy{Environment.NewLine}版本: {GetApplicationVersion()}",
+            "关于 EasyProxy",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    private static string GetApplicationVersion()
+    {
+        var informationalVersion = typeof(AppProxyGui).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            var metadataIndex = informationalVersion.IndexOf('+', StringComparison.Ordinal);
+            return metadataIndex > 0
+                ? informationalVersion[..metadataIndex]
+                : informationalVersion;
+        }
+
+        return typeof(AppProxyGui).Assembly.GetName().Version?.ToString() ?? "未知";
     }
 
     private Control BuildConfigBar()

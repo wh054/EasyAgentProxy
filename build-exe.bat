@@ -7,10 +7,13 @@ set "PROJECT=%ROOT%AppProxyHelper\AppProxyHelper.csproj"
 set "APP_NAME=EasyProxy"
 set "CONFIGURATION=Release"
 set "RID=win-x64"
+set "VERSION_FILE=%ROOT%installer\version.txt"
 if "%NUGET_SOURCE%"=="" set "NUGET_SOURCE=https://api.nuget.org/v3/index.json"
 
 if not "%~1"=="" set "RID=%~1"
 if not "%~2"=="" set "CONFIGURATION=%~2"
+if "%PRODUCT_VERSION%"=="" if exist "%VERSION_FILE%" set /p PRODUCT_VERSION=<"%VERSION_FILE%"
+if "%PRODUCT_VERSION%"=="" set "PRODUCT_VERSION=1.0.0"
 
 set "DIST=%ROOT%dist\%APP_NAME%-%RID%"
 set "DOTNET_EXE=dotnet"
@@ -24,6 +27,7 @@ echo %APP_NAME% single-file publish
 echo Project : %PROJECT%
 echo Runtime : %RID%
 echo Config  : %CONFIGURATION%
+echo Version : %PRODUCT_VERSION%
 echo Output  : %DIST%
 echo NuGet   : %NUGET_SOURCE%
 echo.
@@ -31,7 +35,7 @@ echo.
 "%DOTNET_EXE%" --version >nul 2>nul
 if errorlevel 1 (
     echo ERROR: .NET SDK was not found.
-    echo Install .NET 7 SDK, or place dotnet.exe at .dotnet\dotnet.exe.
+    echo Install .NET 10 SDK, or place dotnet.exe at .dotnet\dotnet.exe.
     goto fail
 )
 
@@ -53,7 +57,10 @@ echo Publishing...
     -p:EnableCompressionInSingleFile=true ^
     -p:IncludeNativeLibrariesForSelfExtract=true ^
     -p:DebugType=None ^
-    -p:DebugSymbols=false
+    -p:DebugSymbols=false ^
+    -p:Version=%PRODUCT_VERSION% ^
+    -p:FileVersion=%PRODUCT_VERSION%.0 ^
+    -p:InformationalVersion=%PRODUCT_VERSION%
 if errorlevel 1 goto fail
 
 if exist "%ROOT%app-proxy.example.json" (
