@@ -342,7 +342,7 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
         builder.Append($"CONNECT {target} HTTP/1.1\r\n");
         builder.Append($"Host: {target}\r\n");
         builder.Append("Proxy-Connection: keep-alive\r\n");
-        builder.Append("User-Agent: AppProxyHelper/1.0\r\n");
+        builder.Append("User-Agent: EasyProxy/1.0\r\n");
 
         if (!string.IsNullOrWhiteSpace(_proxy.UserInfo))
         {

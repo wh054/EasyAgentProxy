@@ -4,6 +4,7 @@ setlocal EnableExtensions
 set "ROOT=%~dp0"
 set "ROOT_ARG=%ROOT:~0,-1%"
 set "PROJECT=%ROOT%AppProxyHelper\AppProxyHelper.csproj"
+set "APP_NAME=EasyProxy"
 set "CONFIGURATION=Release"
 set "RID=win-x64"
 if "%NUGET_SOURCE%"=="" set "NUGET_SOURCE=https://api.nuget.org/v3/index.json"
@@ -11,7 +12,7 @@ if "%NUGET_SOURCE%"=="" set "NUGET_SOURCE=https://api.nuget.org/v3/index.json"
 if not "%~1"=="" set "RID=%~1"
 if not "%~2"=="" set "CONFIGURATION=%~2"
 
-set "DIST=%ROOT%dist\AppProxyHelper-%RID%"
+set "DIST=%ROOT%dist\%APP_NAME%-%RID%"
 set "DOTNET_EXE=dotnet"
 if exist "%ROOT%.dotnet\dotnet.exe" set "DOTNET_EXE=%ROOT%.dotnet\dotnet.exe"
 
@@ -19,7 +20,7 @@ pushd "%ROOT%" >nul
 if errorlevel 1 goto fail
 
 echo.
-echo AppProxyHelper single-file publish
+echo %APP_NAME% single-file publish
 echo Project : %PROJECT%
 echo Runtime : %RID%
 echo Config  : %CONFIGURATION%
@@ -85,14 +86,14 @@ if /i "%RID%"=="win-x86" (
     )
 )
 
-if not exist "%DIST%\AppProxyHelper.exe" (
-    echo ERROR: publish finished but AppProxyHelper.exe was not found.
+if not exist "%DIST%\%APP_NAME%.exe" (
+    echo ERROR: publish finished but %APP_NAME%.exe was not found.
     goto fail
 )
 
 echo.
 echo Done.
-echo EXE: %DIST%\AppProxyHelper.exe
+echo EXE: %DIST%\%APP_NAME%.exe
 goto end
 
 :fail

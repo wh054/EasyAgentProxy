@@ -156,14 +156,14 @@ public static class Cli
     {
         Console.WriteLine(
             """
-            AppProxyHelper - 按应用启动代理辅助工具
+            EasyProxy - 按应用启动代理辅助工具
 
             用法:
-              AppProxyHelper init [--config app-proxy.json]
-              AppProxyHelper check --config app-proxy.json
-              AppProxyHelper repair-env --config app-proxy.json
-              AppProxyHelper run --config app-proxy.json
-              AppProxyHelper ui [--config app-proxy.json] [--repair-env]
+              EasyProxy init [--config app-proxy.json]
+              EasyProxy check --config app-proxy.json
+              EasyProxy repair-env --config app-proxy.json
+              EasyProxy run --config app-proxy.json
+              EasyProxy ui [--config app-proxy.json] [--repair-env]
 
             说明:
               Transparent 是默认模式。它使用 WinDivert 驱动按目标 PID 分类连接，并把 IPv4 TCP

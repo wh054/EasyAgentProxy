@@ -14,17 +14,18 @@ Unicode true
 
 !include "MUI2.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
 
-!define PRODUCT_NAME "ProxyKing AppProxyHelper"
-!define COMPANY_NAME "ProxyKing"
-!define APP_EXE "AppProxyHelper.exe"
+!define PRODUCT_NAME "EasyProxy"
+!define COMPANY_NAME "EasyProxy"
+!define APP_EXE "EasyProxy.exe"
 !define UNINSTALL_EXE "uninstall.exe"
-!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyKing AppProxyHelper"
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\EasyProxy"
 
 Name "${PRODUCT_NAME}"
 OutFile "${OUTPUT_FILE}"
-InstallDir "$PROGRAMFILES64\ProxyKing\AppProxyHelper"
-InstallDirRegKey HKLM "Software\ProxyKing\AppProxyHelper" "InstallDir"
+InstallDir "$PROGRAMFILES64\EasyProxy"
+InstallDirRegKey HKLM "Software\EasyProxy" "InstallDir"
 RequestExecutionLevel admin
 
 SetCompressor /SOLID lzma
@@ -55,40 +56,44 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (C) ${COMPANY_NAME}"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function EnsureAdmin
-  UserInfo::GetAccountType
-  Pop $0
-
-  ${If} $0 != "Admin"
+  SetRegView 64
+  ClearErrors
+  WriteRegStr HKLM "Software\EasyProxy\ElevationTest" "CanWrite" "1"
+  ${If} ${Errors}
+    ${GetParameters} $0
     ClearErrors
-    ExecShell "runas" "$EXEPATH" "$CMDLINE"
+    ExecShell "runas" "$EXEPATH" "$0"
     ${If} ${Errors}
       MessageBox MB_ICONSTOP "Administrator permission is required. Please approve the UAC prompt or run this setup as administrator."
     ${EndIf}
     Quit
   ${EndIf}
+  DeleteRegKey HKLM "Software\EasyProxy\ElevationTest"
 FunctionEnd
 
 Function .onInit
   Call EnsureAdmin
 
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "ProxyKing AppProxyHelper requires 64-bit Windows."
+    MessageBox MB_ICONSTOP "EasyProxy requires 64-bit Windows."
     Abort
   ${EndIf}
 FunctionEnd
 
 Function un.EnsureAdmin
-  UserInfo::GetAccountType
-  Pop $0
-
-  ${If} $0 != "Admin"
+  SetRegView 64
+  ClearErrors
+  WriteRegStr HKLM "Software\EasyProxy\ElevationTest" "CanWrite" "1"
+  ${If} ${Errors}
+    ${GetParameters} $0
     ClearErrors
-    ExecShell "runas" "$EXEPATH" "$CMDLINE"
+    ExecShell "runas" "$EXEPATH" "$0"
     ${If} ${Errors}
       MessageBox MB_ICONSTOP "Administrator permission is required. Please approve the UAC prompt or run uninstall.exe as administrator."
     ${EndIf}
     Quit
   ${EndIf}
+  DeleteRegKey HKLM "Software\EasyProxy\ElevationTest"
 FunctionEnd
 
 Function un.onInit
@@ -109,12 +114,12 @@ Section "" SecMain
 
   WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
 
-  CreateDirectory "$SMPROGRAMS\ProxyKing AppProxyHelper"
-  CreateShortcut "$SMPROGRAMS\ProxyKing AppProxyHelper\ProxyKing AppProxyHelper.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
-  CreateShortcut "$SMPROGRAMS\ProxyKing AppProxyHelper\Uninstall ProxyKing AppProxyHelper.lnk" "$INSTDIR\${UNINSTALL_EXE}"
-  CreateShortcut "$DESKTOP\ProxyKing AppProxyHelper.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
+  CreateDirectory "$SMPROGRAMS\EasyProxy"
+  CreateShortcut "$SMPROGRAMS\EasyProxy\EasyProxy.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
+  CreateShortcut "$SMPROGRAMS\EasyProxy\Uninstall EasyProxy.lnk" "$INSTDIR\${UNINSTALL_EXE}"
+  CreateShortcut "$DESKTOP\EasyProxy.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}"
 
-  WriteRegStr HKLM "Software\ProxyKing\AppProxyHelper" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "Software\EasyProxy" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "${COMPANY_NAME}"
@@ -130,10 +135,10 @@ Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
-  Delete "$DESKTOP\ProxyKing AppProxyHelper.lnk"
-  Delete "$SMPROGRAMS\ProxyKing AppProxyHelper\ProxyKing AppProxyHelper.lnk"
-  Delete "$SMPROGRAMS\ProxyKing AppProxyHelper\Uninstall ProxyKing AppProxyHelper.lnk"
-  RMDir "$SMPROGRAMS\ProxyKing AppProxyHelper"
+  Delete "$DESKTOP\EasyProxy.lnk"
+  Delete "$SMPROGRAMS\EasyProxy\EasyProxy.lnk"
+  Delete "$SMPROGRAMS\EasyProxy\Uninstall EasyProxy.lnk"
+  RMDir "$SMPROGRAMS\EasyProxy"
 
   Delete "$INSTDIR\app-proxy.example.json"
   Delete "$INSTDIR\WinDivert64.sys"
@@ -141,8 +146,7 @@ Section "Uninstall"
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\${UNINSTALL_EXE}"
   RMDir "$INSTDIR"
-  RMDir "$PROGRAMFILES64\ProxyKing"
 
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
-  DeleteRegKey HKLM "Software\ProxyKing\AppProxyHelper"
+  DeleteRegKey HKLM "Software\EasyProxy"
 SectionEnd

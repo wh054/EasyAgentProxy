@@ -2,40 +2,38 @@
   xmlns="http://wixtoolset.org/schemas/v4/wxs"
   xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="ProxyKing AppProxyHelper"
-    Manufacturer="ProxyKing"
+    Name="EasyProxy"
+    Manufacturer="EasyProxy"
     Version="$(var.ProductVersion)"
     UpgradeCode="A0387026-2F07-4C9E-8797-FA717835C21B"
     Scope="perMachine">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of ProxyKing AppProxyHelper is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of EasyProxy is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <UIRef Id="WixUI_ErrorProgressText" />
 
-    <Icon Id="AppProxyHelper.exe" SourceFile="$(var.PublishDir)\AppProxyHelper.exe" />
+    <Icon Id="EasyProxy.exe" SourceFile="$(var.PublishDir)\EasyProxy.exe" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="CompanyFolder" Name="ProxyKing">
-        <Directory Id="INSTALLFOLDER" Name="AppProxyHelper" />
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="EasyProxy" />
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ApplicationProgramsFolder" Name="ProxyKing AppProxyHelper" />
+      <Directory Id="ApplicationProgramsFolder" Name="EasyProxy" />
     </StandardDirectory>
 
     <DirectoryRef Id="INSTALLFOLDER">
       <Component Id="AppProxyHelperExeComponent" Guid="61F4DF02-5F1F-4529-B6C0-B8096741BE59" Bitness="always64">
-        <File Id="AppProxyHelperExe" Source="$(var.PublishDir)\AppProxyHelper.exe" KeyPath="yes">
+        <File Id="AppProxyHelperExe" Source="$(var.PublishDir)\EasyProxy.exe" KeyPath="yes">
           <Shortcut
             Id="ApplicationStartMenuShortcut"
             Directory="ApplicationProgramsFolder"
-            Name="ProxyKing AppProxyHelper"
-            Description="Launch ProxyKing AppProxyHelper"
+            Name="EasyProxy"
+            Description="Launch EasyProxy"
             WorkingDirectory="INSTALLFOLDER"
-            Icon="AppProxyHelper.exe"
+            Icon="EasyProxy.exe"
             Advertise="yes" />
         </File>
       </Component>
@@ -58,7 +56,7 @@
         <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
         <RegistryValue
           Root="HKCU"
-          Key="Software\ProxyKing\AppProxyHelper"
+          Key="Software\EasyProxy"
           Name="StartMenuFolder"
           Type="integer"
           Value="1"
@@ -66,7 +64,7 @@
       </Component>
     </DirectoryRef>
 
-    <Feature Id="MainFeature" Title="ProxyKing AppProxyHelper" Level="1">
+    <Feature Id="MainFeature" Title="EasyProxy" Level="1">
       <ComponentRef Id="AppProxyHelperExeComponent" />
       <ComponentRef Id="WinDivertDllComponent" />
       <ComponentRef Id="WinDivertDriverComponent" />

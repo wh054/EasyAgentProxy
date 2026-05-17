@@ -1,6 +1,6 @@
-# AppProxyHelper
+# EasyProxy
 
-AppProxyHelper 是一个 .NET 控制台项目，用来按应用启动代理配置，并生成可排查代理问题的日志。
+EasyProxy 是一个 .NET 控制台项目，用来按应用启动代理配置，并生成可排查代理问题的日志。
 
 ## 当前可运行能力
 
@@ -72,7 +72,7 @@ dotnet run --project .\AppProxyHelper -- run --config .\app-proxy.json
 
 默认 `transparent.driverPath` 是 `WinDivert.dll`，无需手动放到 `drivers` 目录。若打开驱动失败，日志会输出常见 Win32 错误的中文解释，例如权限不足、驱动签名被拒绝或系统中已有不兼容版本。
 
-启动透明拦截时，程序会先尝试连接系统已有 WinDivert 驱动；只有系统中没有已有驱动服务时，才使用应用目录自带的 `WinDivert64.sys` 按需安装。界面中的 `环境修复` 会检查管理员权限、WinDivert 文件、Base Filtering Engine 服务和 WinDivert 服务状态；它不会自动覆盖或卸载已有 WinDivert 服务，避免影响其他软件。命令行也可以使用 `AppProxyHelper repair-env --config app-proxy.json` 执行同一套检查。
+启动透明拦截时，程序会先尝试连接系统已有 WinDivert 驱动；只有系统中没有已有驱动服务时，才使用应用目录自带的 `WinDivert64.sys` 按需安装。界面中的 `环境修复` 会检查管理员权限、WinDivert 文件、Base Filtering Engine 服务和 WinDivert 服务状态；它不会自动覆盖或卸载已有 WinDivert 服务，避免影响其他软件。命令行也可以使用 `EasyProxy repair-env --config app-proxy.json` 执行同一套检查。
 
 ## 配置要点
 

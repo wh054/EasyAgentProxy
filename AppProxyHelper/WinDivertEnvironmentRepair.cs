@@ -14,6 +14,8 @@ internal static class WinDivertEnvironmentRepair
     private const int ServiceAutoStart = 2;
     private const int ServiceRunning = 4;
     private const int ErrorServiceAlreadyRunning = 1056;
+    private const int ErrorServiceMarkedForDelete = 1072;
+    private const int ErrorServiceDisabled = 1058;
     private const int ErrorServiceDoesNotExist = 1060;
 
     public static async Task<int> CheckAndRepairAsync(
@@ -79,7 +81,32 @@ internal static class WinDivertEnvironmentRepair
 
         if (!string.IsNullOrWhiteSpace(driverPath))
         {
-            hasIssue |= !TestWinDivertOpen(driverPath, loadedConfig.Value.Transparent.WinDivertPriority, logger);
+            var openSucceeded = TestWinDivertOpen(
+                driverPath,
+                loadedConfig.Value.Transparent.WinDivertPriority,
+                logger,
+                out var openError);
+            if (!openSucceeded && openError == ErrorServiceDisabled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var refreshedWinDivert = WindowsServiceManager.GetSnapshot(WinDivertServiceName);
+                LogServiceSnapshot(logger, "WinDivert", refreshedWinDivert);
+                var repairedAfterOpenFailure = refreshedWinDivert.Exists
+                    && TryRepairWinDivertService(refreshedWinDivert, logger, ref hasIssue);
+                repaired |= repairedAfterOpenFailure;
+
+                if (repairedAfterOpenFailure)
+                {
+                    openSucceeded = TestWinDivertOpen(
+                        driverPath,
+                        loadedConfig.Value.Transparent.WinDivertPriority,
+                        logger,
+                        out _);
+                }
+            }
+
+            hasIssue |= !openSucceeded;
         }
 
         if (hasIssue)
@@ -172,25 +199,46 @@ internal static class WinDivertEnvironmentRepair
         AppLogger logger,
         ref bool hasIssue)
     {
-        if (snapshot.StartValue == ServiceDisabled)
-        {
-            logger.Warn("WinDivert 服务已被禁用。为避免影响其他软件，环境检查不会自动修改它；请在高级修复中确认后处理。");
-            hasIssue = true;
-        }
-
-        if (!string.IsNullOrWhiteSpace(snapshot.ImagePath)
-            && !snapshot.ImagePath.Contains("WinDivert", StringComparison.OrdinalIgnoreCase))
+        var repaired = false;
+        if (!IsRecognizedWinDivertService(snapshot))
         {
             logger.Warn($"WinDivert 服务路径看起来异常: {snapshot.ImagePath}");
-            logger.Warn("如果后续仍然失败，请在高级修复中确认是否关闭或卸载当前 WinDivert 服务。");
+            logger.Warn("为避免影响其他软件，环境修复不会自动修改该服务；请确认是否关闭或卸载当前 WinDivert 服务。");
             hasIssue = true;
+            return repaired;
         }
 
-        return false;
+        if (snapshot.StartValue == ServiceDisabled)
+        {
+            if (WindowsServiceManager.TrySetStartType(WinDivertServiceName, ServiceDemandStart, out var error))
+            {
+                logger.Warn("WinDivert 服务已被禁用，已改为手动启动。");
+                repaired = true;
+            }
+            else
+            {
+                logger.Error($"无法修改 WinDivert 服务启动类型: {DescribeWin32Error(error)}");
+                if (error == ErrorServiceMarkedForDelete)
+                {
+                    LogWinDivertMarkedForDeleteAdvice(logger);
+                }
+
+                hasIssue = true;
+            }
+        }
+
+        return repaired;
     }
 
-    private static bool TestWinDivertOpen(string driverPath, int priority, AppLogger logger)
+    private static bool IsRecognizedWinDivertService(WindowsServiceSnapshot snapshot)
     {
+        return string.IsNullOrWhiteSpace(snapshot.ImagePath)
+            || snapshot.ImagePath.Contains("WinDivert", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TestWinDivertOpen(string driverPath, int priority, AppLogger logger, out int? errorCode)
+    {
+        errorCode = null;
         try
         {
             using var native = new WinDivertNative(driverPath);
@@ -215,6 +263,7 @@ internal static class WinDivertEnvironmentRepair
         }
         catch (Win32Exception ex)
         {
+            errorCode = ex.NativeErrorCode;
             logger.Error($"WinDivert 打开测试失败: Win32Error={ex.NativeErrorCode}: {WinDivertNative.ExplainError(ex.NativeErrorCode)}");
             if (ex.NativeErrorCode is 577 or 1275)
             {
@@ -223,6 +272,7 @@ internal static class WinDivertEnvironmentRepair
             else if (ex.NativeErrorCode == 1058)
             {
                 logger.Warn("这通常表示 WinDivert 服务仍处于禁用状态，或关联驱动设备没有被系统允许启动。");
+                logger.Warn("如果前面还出现 Win32Error=1072，请重启 Windows 后再运行环境修复。");
             }
 
             return false;
@@ -279,6 +329,12 @@ internal static class WinDivertEnvironmentRepair
     private static string DescribeWin32Error(int error)
     {
         return error == 0 ? "成功" : $"Win32Error={error}: {new Win32Exception(error).Message}";
+    }
+
+    private static void LogWinDivertMarkedForDeleteAdvice(AppLogger logger)
+    {
+        logger.Warn("WinDivert 服务已被 Windows 标记为删除，当前会话内无法再修改它的启动类型。");
+        logger.Warn("请重启电脑，让 Windows 完成驱动服务删除/释放后，再运行环境修复或重新启动目标应用。");
     }
 
     private static bool IsAdministrator()

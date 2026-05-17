@@ -44,9 +44,9 @@ internal sealed class GuiSingleInstance : IDisposable
     {
         var executablePath = GetExecutablePath();
         var instanceKey = BuildInstanceKey(executablePath);
-        var mutexName = $@"Local\AppProxyHelper.Ui.{instanceKey}";
-        var activateEventName = $@"Local\AppProxyHelper.Ui.Activate.{instanceKey}";
-        var closeEventName = $@"Local\AppProxyHelper.Ui.CloseForElevation.{instanceKey}";
+        var mutexName = $@"Local\EasyProxy.Ui.{instanceKey}";
+        var activateEventName = $@"Local\EasyProxy.Ui.Activate.{instanceKey}";
+        var closeEventName = $@"Local\EasyProxy.Ui.CloseForElevation.{instanceKey}";
 
         Mutex mutex;
         try

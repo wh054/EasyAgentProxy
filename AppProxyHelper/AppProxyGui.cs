@@ -43,12 +43,13 @@ internal sealed class AppProxyGuiForm : Form
     private const int ErrorCancelled = 1223;
     private const int MainWindowWidth = 1040;
     private const int MainWindowHeight = 740;
-    private const int MainActionBarHeight = 38;
-    private const int CompactRowHeight = 32;
-    private const int HomeProxyHeight = 74;
-    private const int TargetSourceHeight = 146;
-    private const int ConfigGroupHeight = 74;
-    private const int EnvironmentRepairGroupHeight = 74;
+    private const int MainActionBarHeight = 42;
+    private const int CompactRowHeight = 36;
+    private const int ButtonHeight = 32;
+    private const int HomeProxyHeight = 80;
+    private const int TargetSourceHeight = 158;
+    private const int ConfigGroupHeight = 82;
+    private const int EnvironmentRepairGroupHeight = 86;
     private const string ManualTargetPresetText = "手动选择";
 
     private readonly TextBox _configPathText = new();
@@ -112,7 +113,7 @@ internal sealed class AppProxyGuiForm : Form
 
     public AppProxyGuiForm(string? initialConfigPath, bool autoRun, bool autoRepairEnvironment)
     {
-        Text = "AppProxyHelper";
+        Text = "EasyProxy";
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -167,7 +168,7 @@ internal sealed class AppProxyGuiForm : Form
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var configDirectory = string.IsNullOrWhiteSpace(localAppData)
             ? AppContext.BaseDirectory
-            : Path.Combine(localAppData, "ProxyKing", "AppProxyHelper");
+            : Path.Combine(localAppData, "EasyProxy");
 
         return Path.Combine(configDirectory, "app-proxy.json");
     }
@@ -215,7 +216,7 @@ internal sealed class AppProxyGuiForm : Form
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add(exitItem);
 
-        _trayIcon.Text = "AppProxyHelper";
+        _trayIcon.Text = "EasyProxy";
         _trayIcon.Icon = Icon ?? SystemIcons.Application;
         _trayIcon.ContextMenuStrip = _trayMenu;
         _trayIcon.Visible = true;
@@ -546,12 +547,8 @@ internal sealed class AppProxyGuiForm : Form
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        _environmentRepairButton.Text = "环境修复";
-        _environmentRepairButton.Dock = DockStyle.Fill;
-        _environmentRepairButton.Click += async (_, _) => await RunOperationAsync(
-            "环境修复",
-            RunEnvironmentRepairAsync,
-            ElevatedAction.RepairEnvironment);
+        ConfigureButton(_environmentRepairButton, "环境修复");
+        _environmentRepairButton.Click += async (_, _) => await ConfirmAndRunEnvironmentRepairAsync();
         panel.Controls.Add(_environmentRepairButton, 0, 0);
 
         group.Controls.Add(panel);
@@ -644,18 +641,15 @@ internal sealed class AppProxyGuiForm : Form
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        _checkButton.Text = "检查";
-        _checkButton.Dock = DockStyle.Fill;
+        ConfigureButton(_checkButton, "检查");
         _checkButton.Click += async (_, _) => await RunOperationAsync("检查", RunCheckAsync);
         panel.Controls.Add(_checkButton, 0, 0);
 
-        _runButton.Text = "启动";
-        _runButton.Dock = DockStyle.Fill;
+        ConfigureButton(_runButton, "启动");
         _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync, ElevatedAction.AutoRun);
         panel.Controls.Add(_runButton, 1, 0);
 
-        _stopButton.Text = "停止";
-        _stopButton.Dock = DockStyle.Fill;
+        ConfigureButton(_stopButton, "停止");
         _stopButton.Enabled = false;
         _stopButton.Click += (_, _) => _operationCts?.Cancel();
         panel.Controls.Add(_stopButton, 2, 0);
@@ -861,13 +855,49 @@ internal sealed class AppProxyGuiForm : Form
     private async void AutoRepairEnvironmentOnShown(object? sender, EventArgs eventArgs)
     {
         Shown -= AutoRepairEnvironmentOnShown;
-        await RunOperationAsync("环境修复", RunEnvironmentRepairAsync, ElevatedAction.None);
+        await RunOperationAsync(
+            "环境修复",
+            RunEnvironmentRepairAsync,
+            ElevatedAction.None,
+            showCompletionDialog: true);
+    }
+
+    private async Task ConfirmAndRunEnvironmentRepairAsync()
+    {
+        if (_operationCts is not null || _elevationInProgress)
+        {
+            ActivateCurrentWindow();
+            return;
+        }
+
+        var result = MessageBox.Show(
+            this,
+            "环境修复会检查 WinDivert 运行环境，并可能修改 Windows 服务启动类型：\r\n\r\n"
+            + "- Base Filtering Engine 被禁用时会改为自动启动。\r\n"
+            + "- WinDivert 服务被禁用时会改为手动启动。\r\n\r\n"
+            + "如果当前不是管理员权限，程序会请求 UAC 授权后继续。是否开始修复？",
+            "确认环境修复",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (result != DialogResult.Yes)
+        {
+            SetStatus("已取消环境修复。");
+            return;
+        }
+
+        await RunOperationAsync(
+            "环境修复",
+            RunEnvironmentRepairAsync,
+            ElevatedAction.RepairEnvironment,
+            showCompletionDialog: true);
     }
 
     private async Task RunOperationAsync(
         string name,
         Func<LoadedConfig, AppLogger, CancellationToken, Task<int>> operation,
-        ElevatedAction elevatedAction = ElevatedAction.None)
+        ElevatedAction elevatedAction = ElevatedAction.None,
+        bool showCompletionDialog = false)
     {
         if (_operationCts is not null || _elevationInProgress)
         {
@@ -901,6 +931,8 @@ internal sealed class AppProxyGuiForm : Form
 
         _operationCts = new CancellationTokenSource();
         SetOperationState(running: true, name);
+        int? completionExitCode = null;
+        string? completionLogFilePath = null;
 
         try
         {
@@ -912,6 +944,8 @@ internal sealed class AppProxyGuiForm : Form
             var exitCode = await operation(loaded, logger, _operationCts.Token);
             AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Information] {name}完成，退出码: {exitCode}");
             SetStatus($"{name}完成，退出码 {exitCode}。");
+            completionExitCode = exitCode;
+            completionLogFilePath = logger.LogFilePath;
         }
         catch (OperationCanceledException)
         {
@@ -930,6 +964,30 @@ internal sealed class AppProxyGuiForm : Form
             _operationCts = null;
             SetOperationState(running: false, name);
         }
+
+        if (showCompletionDialog && completionExitCode is int exitCodeForDialog)
+        {
+            ShowOperationResultDialog(name, exitCodeForDialog, completionLogFilePath);
+        }
+    }
+
+    private void ShowOperationResultDialog(string name, int exitCode, string? logFilePath)
+    {
+        var succeeded = exitCode == 0;
+        var message = succeeded
+            ? $"{name}完成，环境检测已通过或已修复可自动处理的问题。\r\n\r\n日志文件:\r\n{logFilePath ?? "-"}"
+            : $"{name}已运行，但仍有需要人工处理的问题。\r\n\r\n"
+              + $"退出码: {exitCode}\r\n"
+              + $"日志文件:\r\n{logFilePath ?? "-"}\r\n\r\n"
+              + "如果日志中出现 Win32Error=1072，说明 WinDivert 服务已被 Windows 标记为删除；请重启电脑后再次运行环境修复或启动。\r\n"
+              + "如果日志中出现 577 或 1275，通常是系统安全策略或安全软件阻止了 WinDivert 驱动。";
+
+        MessageBox.Show(
+            this,
+            message,
+            succeeded ? $"{name}完成" : $"{name}需要处理",
+            MessageBoxButtons.OK,
+            succeeded ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private static async Task<int> RunCheckAsync(
@@ -1703,13 +1761,20 @@ internal sealed class AppProxyGuiForm : Form
 
     private static Button MakeButton(string text)
     {
-        return new Button
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(2, 1, 2, 1),
-            MinimumSize = new Size(0, 28)
-        };
+        var button = new Button();
+        ConfigureButton(button, text);
+        return button;
+    }
+
+    private static void ConfigureButton(Button button, string text)
+    {
+        button.Text = text;
+        button.Dock = DockStyle.Fill;
+        button.Margin = new Padding(2, 2, 2, 2);
+        button.Padding = new Padding(0, 1, 0, 1);
+        button.MinimumSize = new Size(0, ButtonHeight);
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.AutoEllipsis = true;
     }
 
     private static Button MakeBrowseButton(Action action)

@@ -3,6 +3,7 @@ setlocal EnableExtensions
 
 set "ROOT=%~dp0"
 set "ROOT_ARG=%ROOT:~0,-1%"
+set "APP_NAME=EasyProxy"
 set "RID=win-x64"
 set "CONFIGURATION=Release"
 set "VERSION_FILE=%ROOT%installer\version.txt"
@@ -50,7 +51,7 @@ if /i not "%RID%"=="win-x64" (
     goto fail
 )
 
-set "PUBLISH_DIR=%ROOT%dist\AppProxyHelper-%RID%"
+set "PUBLISH_DIR=%ROOT%dist\%APP_NAME%-%RID%"
 set "MSI_DIR=%ROOT%dist\installer"
 set "DOTNET_EXE=dotnet"
 if exist "%ROOT%.dotnet\dotnet.exe" set "DOTNET_EXE=%ROOT%.dotnet\dotnet.exe"
@@ -61,10 +62,10 @@ if errorlevel 1 goto fail
 call :load_version
 if errorlevel 1 goto fail
 
-set "MSI_PATH=%MSI_DIR%\ProxyKing-AppProxyHelper-%PRODUCT_VERSION%-%RID%.msi"
+set "MSI_PATH=%MSI_DIR%\%APP_NAME%-%PRODUCT_VERSION%-%RID%.msi"
 
 echo.
-echo ProxyKing AppProxyHelper MSI build
+echo %APP_NAME% MSI build
 echo Version : %PRODUCT_VERSION%
 echo Next    : %NEXT_PRODUCT_VERSION%
 echo Bump    : %BUMP_KIND%
@@ -77,8 +78,8 @@ set "NO_PAUSE=1"
 call "%ROOT%build-exe.bat" "%RID%" "%CONFIGURATION%"
 if errorlevel 1 goto fail
 
-if not exist "%PUBLISH_DIR%\AppProxyHelper.exe" (
-    echo ERROR: Missing %PUBLISH_DIR%\AppProxyHelper.exe
+if not exist "%PUBLISH_DIR%\%APP_NAME%.exe" (
+    echo ERROR: Missing %PUBLISH_DIR%\%APP_NAME%.exe
     goto fail
 )
 

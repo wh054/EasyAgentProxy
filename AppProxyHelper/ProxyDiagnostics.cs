@@ -159,7 +159,7 @@ public static class ProxyDiagnostics
             $"CONNECT {target} HTTP/1.1\r\n" +
             $"Host: {target}\r\n" +
             "Proxy-Connection: keep-alive\r\n" +
-            "User-Agent: AppProxyHelper/1.0\r\n";
+            "User-Agent: EasyProxy/1.0\r\n";
 
         if (!string.IsNullOrWhiteSpace(proxy.UserInfo))
         {
