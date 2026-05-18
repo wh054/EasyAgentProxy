@@ -21,13 +21,16 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
     private WinDivertHandle? _networkHandle;
     private WinDivertHandle? _flowHandle;
     private WinDivertHandle? _socketHandle;
+    private WinDivertHandle? _socketBlockHandle;
     private TransparentTcpProxyServer? _tcpProxy;
     private TransparentUdpProxyServer? _udpProxy;
     private Task? _networkTask;
     private Task? _flowTask;
     private Task? _socketTask;
+    private Task? _socketBlockTask;
     private CancellationTokenRegistration _externalCancellationRegistration;
     private int _networkRewriteErrorCount;
+    private int _socketBlockedUdp443Count;
 
     public WinDivertInterceptionSession(LoadedConfig loadedConfig, AppLogger logger)
     {
@@ -76,9 +79,14 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
 
         _logger.Info($"Transparent 模式启动: provider=WinDivert, driverPath={driverPath}");
         _logger.Info($"透明转发监听点: {redirectAddress}:{_config.RedirectListenPort}");
+        if (_config.BlockQuicUdp443)
+        {
+            _logger.Info("已启用目标进程 UDP/443 阻断；Chromium/Electron QUIC 将被迫回落到 TCP。");
+        }
 
         _native = new WinDivertNative(driverPath);
-        var transportFilter = _config.CaptureUdp ? "(tcp or udp)" : "tcp";
+        var captureUdpTraffic = _config.CaptureUdp || _config.BlockQuicUdp443;
+        var transportFilter = captureUdpTraffic ? "(tcp or udp)" : "tcp";
         var networkFilter = $"outbound and ip and {transportFilter} and !impostor";
         OpenWinDivertHandles(transportFilter, networkFilter);
 
@@ -117,13 +125,16 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
             _connections,
             redirectAddress,
             _config.RedirectListenPort,
-            _udpProxy);
+            _udpProxy,
+            _config.BlockQuicUdp443,
+            _logger);
 
         _flowTask = Task.Run(() => PumpFlowAsync(token), CancellationToken.None);
         _socketTask = Task.Run(() => PumpSocketAsync(token), CancellationToken.None);
+        _socketBlockTask = Task.Run(() => PumpSocketBlockAsync(token), CancellationToken.None);
         _networkTask = Task.Run(() => PumpNetworkAsync(rewriter, token), CancellationToken.None);
 
-        var protocols = _config.CaptureUdp ? "IPv4 TCP/UDP" : "IPv4 TCP";
+        var protocols = captureUdpTraffic ? "IPv4 TCP/UDP" : "IPv4 TCP";
         _logger.Info($"WinDivert 透明拦截已启动。当前实现支持目标进程 {protocols} 透明代理。");
 
         return Task.CompletedTask;
@@ -169,9 +180,14 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
 
         try
         {
+            if (_config.BlockQuicUdp443)
+            {
+                _socketBlockHandle = TryOpenSocketBlockHandle(extraFlags);
+            }
+
             var classificationFlags = WinDivertFlags.Sniff | WinDivertFlags.RecvOnly | extraFlags;
             _flowHandle = _native.Open(transportFilter, WinDivertLayer.Flow, (short)_config.WinDivertPriority, classificationFlags);
-            _socketHandle = _native.Open(transportFilter, WinDivertLayer.Socket, (short)_config.WinDivertPriority, classificationFlags);
+            _socketHandle = _native.Open(transportFilter, WinDivertLayer.Socket, SocketObservePriority(), classificationFlags);
             _networkHandle = _native.Open(networkFilter, WinDivertLayer.Network, (short)_config.WinDivertPriority, extraFlags);
         }
         catch
@@ -186,9 +202,11 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         _networkHandle?.Dispose();
         _flowHandle?.Dispose();
         _socketHandle?.Dispose();
+        _socketBlockHandle?.Dispose();
         _networkHandle = null;
         _flowHandle = null;
         _socketHandle = null;
+        _socketBlockHandle = null;
     }
 
     public void SetTargetProcess(int processId, string executablePath)
@@ -202,9 +220,11 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         _networkHandle?.Shutdown();
         _flowHandle?.Shutdown();
         _socketHandle?.Shutdown();
+        _socketBlockHandle?.Shutdown();
         _networkHandle?.Dispose();
         _flowHandle?.Dispose();
         _socketHandle?.Dispose();
+        _socketBlockHandle?.Dispose();
 
         if (_tcpProxy is not null)
         {
@@ -220,6 +240,7 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         pumpsStopped &= await WaitForPumpAsync(_networkTask, "network");
         pumpsStopped &= await WaitForPumpAsync(_flowTask, "flow");
         pumpsStopped &= await WaitForPumpAsync(_socketTask, "socket");
+        pumpsStopped &= await WaitForPumpAsync(_socketBlockTask, "socket-block");
 
         _externalCancellationRegistration.Dispose();
         if (pumpsStopped)
@@ -279,6 +300,11 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
                     }
                 }
 
+                if (rewriteKind == PacketRewriteKind.Drop)
+                {
+                    continue;
+                }
+
                 if (rewriteKind == PacketRewriteKind.Modified)
                 {
                     Marshal.Copy(managedBuffer, 0, packet, (int)recvLen);
@@ -328,6 +354,43 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
             cancellationToken,
             address => _connections.HandleSocketEvent(address),
             "socket");
+    }
+
+    private async Task PumpSocketBlockAsync(CancellationToken cancellationToken)
+    {
+        if (_native is null || _socketBlockHandle is null)
+        {
+            return;
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var address = new WinDivertAddress();
+            if (!_native.Receive(_socketBlockHandle, IntPtr.Zero, 0, out _, ref address))
+            {
+                if (ShouldStopAfterNativeFailure(cancellationToken))
+                {
+                    return;
+                }
+
+                _logger.Warn($"WinDivert socket-block 接收失败: {LastWin32ErrorText()}");
+                continue;
+            }
+
+            if (ShouldBlockUdp443Socket(address))
+            {
+                LogBlockedUdp443Socket(address);
+                continue;
+            }
+
+            if (!_native.Send(_socketBlockHandle, IntPtr.Zero, 0, out _, ref address)
+                && !ShouldStopAfterNativeFailure(cancellationToken))
+            {
+                _logger.Warn($"WinDivert socket-block 放行失败: {LastWin32ErrorText()}");
+            }
+        }
+
+        await Task.CompletedTask;
     }
 
     private async Task PumpClassificationAsync(
@@ -436,6 +499,80 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         return $"Win32Error={error}: {WinDivertNative.ExplainError(error)}";
     }
 
+    private bool ShouldBlockUdp443Socket(WinDivertAddress address)
+    {
+        if (!_config.BlockQuicUdp443 || address.Event != WinDivertEvent.SocketConnect)
+        {
+            return false;
+        }
+
+        var socket = address.Data.Socket;
+        return socket.Protocol == IpProtocols.Udp
+            && socket.RemotePort == 443
+            && _connections.IsTargetProcess(socket.ProcessId);
+    }
+
+    private void LogBlockedUdp443Socket(WinDivertAddress address)
+    {
+        var socket = address.Data.Socket;
+        var count = Interlocked.Increment(ref _socketBlockedUdp443Count);
+        if (count <= 20 || count % 100 == 0)
+        {
+            var remoteAddress = GetIPv4Address(
+                socket.RemoteAddr0,
+                socket.RemoteAddr1,
+                socket.RemoteAddr2,
+                socket.RemoteAddr3);
+            var remoteText = remoteAddress is null || socket.RemotePort == 0
+                ? "*"
+                : $"{remoteAddress}:{socket.RemotePort}";
+            _logger.Info(
+                $"已阻断目标 UDP/443 socket connect 以强制回落 TCP: " +
+                $"pid={socket.ProcessId}, localPort={socket.LocalPort}, remote={remoteText}, count={count}");
+        }
+    }
+
+    private WinDivertHandle? TryOpenSocketBlockHandle(ulong extraFlags)
+    {
+        if (_native is null)
+        {
+            throw new ObjectDisposedException(nameof(WinDivertNative));
+        }
+
+        const string filter = "event == CONNECT";
+        try
+        {
+            var handle = _native.Open(
+                filter,
+                WinDivertLayer.Socket,
+                SocketBlockPriority(),
+                extraFlags);
+            _logger.Info($"目标进程 UDP/443 socket 阻断句柄已启用: filter={filter}");
+            return handle;
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 87)
+        {
+            _logger.Warn(
+                "当前 WinDivert 驱动不接受 socket 层阻断过滤表达式，已降级为 network 层阻断/普通透明代理，启动继续。" +
+                $" filter={filter}, Win32Error={ex.NativeErrorCode}: {WinDivertNative.ExplainError(ex.NativeErrorCode)}");
+            return null;
+        }
+    }
+
+    private short SocketBlockPriority()
+    {
+        return _config.WinDivertPriority < 1000
+            ? (short)(_config.WinDivertPriority + 1)
+            : (short)_config.WinDivertPriority;
+    }
+
+    private short SocketObservePriority()
+    {
+        return _config.BlockQuicUdp443 && _config.WinDivertPriority > -1000
+            ? (short)(_config.WinDivertPriority - 1)
+            : (short)_config.WinDivertPriority;
+    }
+
     private async Task<bool> WaitForPumpAsync(Task? task, string name)
     {
         if (task is null)
@@ -486,6 +623,38 @@ internal sealed class WinDivertInterceptionSession : IInterceptionSession
         }
 
         return address;
+    }
+
+    private static IPAddress? GetIPv4Address(uint part0, uint part1, uint part2, uint part3)
+    {
+        if (part0 == 0 && part1 == 0 && part2 == 0 && part3 == 0)
+        {
+            return null;
+        }
+
+        if (part0 != 0 && part1 == 0 && part2 == 0 && part3 == 0)
+        {
+            return FromWinDivertIPv4Word(part0);
+        }
+
+        if (part0 == 0 && part1 == 0 && part3 != 0 && IsIPv4MappedMarker(part2))
+        {
+            return FromWinDivertIPv4Word(part3);
+        }
+
+        return part0 != 0 ? FromWinDivertIPv4Word(part0) : null;
+    }
+
+    private static IPAddress FromWinDivertIPv4Word(uint value)
+    {
+        return new IPAddress(BitConverter.GetBytes(value));
+    }
+
+    private static bool IsIPv4MappedMarker(uint value)
+    {
+        var bytes = BitConverter.GetBytes(value);
+        return bytes is [0x00, 0x00, 0xFF, 0xFF]
+            or [0xFF, 0xFF, 0x00, 0x00];
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]

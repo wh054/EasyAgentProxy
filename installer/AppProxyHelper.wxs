@@ -8,7 +8,9 @@
     UpgradeCode="A0387026-2F07-4C9E-8797-FA717835C21B"
     Scope="perMachine">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of EasyProxy is already installed." />
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of EasyProxy is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
@@ -38,14 +40,6 @@
         </File>
       </Component>
 
-      <Component Id="WinDivertDllComponent" Guid="F7B0D65D-0664-4C8D-9267-311DD1D536A5" Bitness="always64">
-        <File Id="WinDivertDll" Source="$(var.PublishDir)\WinDivert.dll" KeyPath="yes" />
-      </Component>
-
-      <Component Id="WinDivertDriverComponent" Guid="B58626BD-F1B1-494A-B0A6-51652EF836D9" Bitness="always64">
-        <File Id="WinDivertDriver" Source="$(var.PublishDir)\WinDivert64.sys" KeyPath="yes" />
-      </Component>
-
       <Component Id="ExampleConfigComponent" Guid="0305E949-59BB-4310-8D83-C11C07F5644F" Bitness="always64">
         <File Id="ExampleConfig" Source="$(var.PublishDir)\app-proxy.example.json" KeyPath="yes" />
       </Component>
@@ -66,8 +60,6 @@
 
     <Feature Id="MainFeature" Title="EasyProxy" Level="1">
       <ComponentRef Id="AppProxyHelperExeComponent" />
-      <ComponentRef Id="WinDivertDllComponent" />
-      <ComponentRef Id="WinDivertDriverComponent" />
       <ComponentRef Id="ExampleConfigComponent" />
       <ComponentRef Id="ApplicationProgramsFolderComponent" />
     </Feature>

@@ -7,7 +7,12 @@ namespace AppProxyHelper;
 
 internal sealed class TransparentTcpProxyServer : IAsyncDisposable
 {
+    private const int TlsFirstClientDataTimeoutMs = 30000;
+    private const int TlsSniContinuationTimeoutMs = 500;
+    private const int MaxTlsClientHelloBytes = 16 * 1024;
     private static readonly TimeSpan StopWaitTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ClientHalfCloseGrace = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ClientHalfClosePostResponseIdle = TimeSpan.FromMilliseconds(750);
 
     private readonly IPAddress _listenAddress;
     private readonly int _listenPort;
@@ -165,12 +170,31 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
 
             try
             {
+                var clientStream = client.GetStream();
+                var initialClientData = await ReadInitialClientDataAsync(clientStream, original, cancellationToken);
+                if (ShouldCloseIdleTlsProbe(original, initialClientData))
+                {
+                    _logger.Debug(
+                        $"透明 TLS 连接未收到客户端首包，已关闭空闲预连接: " +
+                        $"localPort={localPort}, original={original.RemoteAddress}:{original.RemotePort}");
+                    return;
+                }
+
+                var connectTarget = GetProxyConnectTarget(original, initialClientData.SniHost);
+
                 _logger.Info(
                     $"透明代理连接: pid-port={localPort}, original={original.RemoteAddress}:{original.RemotePort}, " +
-                    $"proxy={_proxy.Scheme}://{_proxy.Host}:{_proxy.Port}");
+                    $"target={connectTarget.Display}, proxy={_proxy.Scheme}://{_proxy.Host}:{_proxy.Port}");
 
-                upstreamStream = await ConnectThroughProxyAsync(upstream, original, cancellationToken);
-                await TunnelAsync(client.GetStream(), upstreamStream, upstream, original, cancellationToken);
+                upstreamStream = await ConnectThroughProxyAsync(upstream, connectTarget, cancellationToken);
+                await TunnelAsync(
+                    client,
+                    clientStream,
+                    upstreamStream,
+                    upstream,
+                    original,
+                    initialClientData.Bytes,
+                    cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -199,7 +223,16 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
 
     private async Task<Stream> ConnectThroughProxyAsync(
         TcpClient upstream,
-        OriginalConnection original,
+        ProxyConnectTarget target,
+        CancellationToken cancellationToken)
+    {
+        var stream = await ConnectToProxyEndpointAsync(upstream, cancellationToken);
+        await EstablishProxyTunnelAsync(stream, target, cancellationToken);
+        return stream;
+    }
+
+    private async Task<Stream> ConnectToProxyEndpointAsync(
+        TcpClient upstream,
         CancellationToken cancellationToken)
     {
         await ConnectWithTimeoutAsync(
@@ -219,22 +252,40 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
 
         if (_proxy.IsSocks)
         {
-            await EstablishSocks5Async(stream, original, cancellationToken);
+            await EstablishSocks5HandshakeAsync(stream, cancellationToken);
             return stream;
         }
 
         if (_proxy.IsHttp)
         {
-            await EstablishHttpConnectAsync(stream, original, cancellationToken);
             return stream;
         }
 
         throw new InvalidOperationException($"不支持的代理协议: {_proxy.Scheme}");
     }
 
-    private async Task EstablishSocks5Async(
+    private async Task EstablishProxyTunnelAsync(
         Stream stream,
-        OriginalConnection original,
+        ProxyConnectTarget target,
+        CancellationToken cancellationToken)
+    {
+        if (_proxy.IsSocks)
+        {
+            await EstablishSocks5ConnectAsync(stream, target, cancellationToken);
+            return;
+        }
+
+        if (_proxy.IsHttp)
+        {
+            await EstablishHttpConnectAsync(stream, target, cancellationToken);
+            return;
+        }
+
+        throw new InvalidOperationException($"不支持的代理协议: {_proxy.Scheme}");
+    }
+
+    private async Task EstablishSocks5HandshakeAsync(
+        Stream stream,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_proxy.UserInfo))
@@ -265,8 +316,14 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
         {
             throw new InvalidOperationException($"SOCKS5 认证方法不支持: 0x{handshake[1]:X2}");
         }
+    }
 
-        var request = BuildSocks5ConnectRequest(original.RemoteAddress, original.RemotePort);
+    private async Task EstablishSocks5ConnectAsync(
+        Stream stream,
+        ProxyConnectTarget target,
+        CancellationToken cancellationToken)
+    {
+        var request = BuildSocks5ConnectRequest(target);
         await stream.WriteAsync(request, cancellationToken);
 
         var response = await ReadExactAsync(stream, 4, cancellationToken);
@@ -311,36 +368,60 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
         }
     }
 
-    private static byte[] BuildSocks5ConnectRequest(IPAddress address, ushort port)
+    private static byte[] BuildSocks5ConnectRequest(ProxyConnectTarget target)
     {
-        var addressBytes = address.GetAddressBytes();
-        var addressType = addressBytes.Length switch
-        {
-            4 => (byte)0x01,
-            16 => (byte)0x04,
-            _ => throw new InvalidOperationException($"SOCKS5 不支持的地址长度: {addressBytes.Length}")
-        };
+        byte[] addressBytes;
+        byte addressType;
+        var domainLengthField = 0;
 
-        var request = new byte[6 + addressBytes.Length];
+        if (target.Address is { } address)
+        {
+            addressBytes = address.GetAddressBytes();
+            addressType = addressBytes.Length switch
+            {
+                4 => (byte)0x01,
+                16 => (byte)0x04,
+                _ => throw new InvalidOperationException($"SOCKS5 不支持的地址长度: {addressBytes.Length}")
+            };
+        }
+        else
+        {
+            addressBytes = Encoding.ASCII.GetBytes(target.Host);
+            if (addressBytes.Length == 0 || addressBytes.Length > 255)
+            {
+                throw new InvalidOperationException("SOCKS5 domain length must be 1-255 bytes.");
+            }
+
+            addressType = 0x03;
+            domainLengthField = 1;
+        }
+
+        var request = new byte[6 + domainLengthField + addressBytes.Length];
         request[0] = 0x05;
         request[1] = 0x01;
         request[2] = 0x00;
         request[3] = addressType;
-        Buffer.BlockCopy(addressBytes, 0, request, 4, addressBytes.Length);
-        request[^2] = (byte)(port >> 8);
-        request[^1] = (byte)(port & 0xFF);
+        var addressOffset = 4;
+        if (domainLengthField == 1)
+        {
+            request[addressOffset++] = (byte)addressBytes.Length;
+        }
+
+        Buffer.BlockCopy(addressBytes, 0, request, addressOffset, addressBytes.Length);
+        request[^2] = (byte)(target.Port >> 8);
+        request[^1] = (byte)(target.Port & 0xFF);
         return request;
     }
 
     private async Task EstablishHttpConnectAsync(
         Stream stream,
-        OriginalConnection original,
+        ProxyConnectTarget target,
         CancellationToken cancellationToken)
     {
-        var target = $"{FormatHost(original.RemoteAddress)}:{original.RemotePort}";
+        var connectTarget = $"{FormatHost(target)}:{target.Port}";
         var builder = new StringBuilder();
-        builder.Append($"CONNECT {target} HTTP/1.1\r\n");
-        builder.Append($"Host: {target}\r\n");
+        builder.Append($"CONNECT {connectTarget} HTTP/1.1\r\n");
+        builder.Append($"Host: {connectTarget}\r\n");
         builder.Append("Proxy-Connection: keep-alive\r\n");
         builder.Append("User-Agent: EasyProxy/1.0\r\n");
 
@@ -364,52 +445,149 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
     }
 
     private async Task TunnelAsync(
-        Stream client,
-        Stream upstream,
+        TcpClient clientTcp,
+        Stream clientStream,
+        Stream upstreamStream,
         TcpClient upstreamClient,
         OriginalConnection original,
+        byte[] initialUpload,
         CancellationToken cancellationToken)
     {
         var started = DateTimeOffset.Now;
-        var clientToProxy = CopyMeteredAsync(client, upstream, cancellationToken);
-        var proxyToClient = CopyMeteredAsync(upstream, client, cancellationToken);
-        var first = await Task.WhenAny(clientToProxy, proxyToClient);
-
-        try
+        long initialUploadBytes = 0;
+        if (initialUpload.Length > 0)
         {
-            await first;
-        }
-        finally
-        {
-            CloseSocket(upstreamClient);
+            await upstreamStream.WriteAsync(initialUpload, cancellationToken);
+            initialUploadBytes = initialUpload.Length;
         }
 
-        await IgnoreExpectedTunnelEndAsync(clientToProxy);
-        await IgnoreExpectedTunnelEndAsync(proxyToClient);
+        var proxyToClientProgress = new CopyProgress();
+        using var tunnelCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var clientToProxy = CopyMeteredAsync("client->proxy", clientStream, upstreamStream, tunnelCts.Token);
+        var proxyToClient = CopyMeteredAsync(
+            "proxy->client",
+            upstreamStream,
+            clientStream,
+            tunnelCts.Token,
+            proxyToClientProgress);
+        var firstTask = await Task.WhenAny(clientToProxy, proxyToClient);
+        var first = await firstTask;
 
-        var c2p = clientToProxy.IsCompletedSuccessfully ? clientToProxy.Result : 0;
-        var p2c = proxyToClient.IsCompletedSuccessfully ? proxyToClient.Result : 0;
+        CopyResult second;
+        if (ReferenceEquals(firstTask, clientToProxy))
+        {
+            second = await WaitForCopyAfterClientHalfCloseAsync(
+                proxyToClient,
+                proxyToClientProgress,
+                upstreamClient,
+                tunnelCts);
+        }
+        else
+        {
+            ShutdownSend(clientTcp);
+            second = await clientToProxy;
+        }
+
+        CloseSocket(upstreamClient);
+        CloseSocket(clientTcp);
+
+        var c2p = initialUploadBytes
+            + (first.Direction == "client->proxy" ? first.Bytes : second.Bytes);
+        var p2c = first.Direction == "proxy->client" ? first.Bytes : second.Bytes;
         var elapsed = DateTimeOffset.Now - started;
         _logger.Info(
-            $"透明代理连接结束: original={original.RemoteAddress}:{original.RemotePort}, " +
-            $"upload={c2p}, download={p2c}, elapsedMs={(long)elapsed.TotalMilliseconds}");
+            $"透明代理连接结束: localPort={original.LocalPort}, original={original.RemoteAddress}:{original.RemotePort}, " +
+            $"upload={c2p}, download={p2c}, first={first.Direction}/{first.EndReason}, " +
+            $"second={second.Direction}/{second.EndReason}, elapsedMs={(long)elapsed.TotalMilliseconds}");
     }
 
-    private static async Task<long> CopyMeteredAsync(Stream source, Stream destination, CancellationToken cancellationToken)
+    private static async Task<CopyResult> CopyMeteredAsync(
+        string direction,
+        Stream source,
+        Stream destination,
+        CancellationToken cancellationToken,
+        CopyProgress? progress = null)
     {
         var buffer = new byte[64 * 1024];
         long total = 0;
 
-        while (true)
+        try
         {
-            var read = await source.ReadAsync(buffer, cancellationToken);
-            if (read == 0)
+            while (true)
             {
-                return total;
+                var read = await source.ReadAsync(buffer, cancellationToken);
+                if (read == 0)
+                {
+                    return new CopyResult(direction, total, "eof");
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                total += read;
+                progress?.Report(total);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return new CopyResult(direction, total, "cancelled");
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            return new CopyResult(direction, total, ex.GetType().Name);
+        }
+    }
+
+    private static async Task<CopyResult> WaitForCopyAfterClientHalfCloseAsync(
+        Task<CopyResult> proxyToClient,
+        CopyProgress progress,
+        TcpClient upstreamClient,
+        CancellationTokenSource tunnelCts)
+    {
+        var startedAt = Environment.TickCount64;
+        var endReason = "client-half-close-timeout";
+
+        while (!proxyToClient.IsCompleted)
+        {
+            await Task.Delay(100);
+            if (proxyToClient.IsCompleted)
+            {
+                break;
             }
 
-            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-            total += read;
+            if (progress.TotalBytes > 0
+                && Environment.TickCount64 - progress.LastProgressTick >= ClientHalfClosePostResponseIdle.TotalMilliseconds)
+            {
+                endReason = "client-half-close-response-idle";
+                break;
+            }
+
+            if (Environment.TickCount64 - startedAt >= ClientHalfCloseGrace.TotalMilliseconds)
+            {
+                break;
+            }
+        }
+
+        if (proxyToClient.IsCompleted)
+        {
+            return await proxyToClient;
+        }
+
+        tunnelCts.Cancel();
+        CloseSocket(upstreamClient);
+        var result = await proxyToClient;
+        return result with { EndReason = $"{endReason}/{result.EndReason}" };
+    }
+
+    private static void ShutdownSend(TcpClient client)
+    {
+        try
+        {
+            client.Client.Shutdown(SocketShutdown.Send);
+        }
+        catch (SocketException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 
@@ -516,6 +694,330 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
         throw new IOException("读取 HTTP 代理响应头失败。");
     }
 
+    private async Task<ClientInitialData> ReadInitialClientDataAsync(
+        Stream clientStream,
+        OriginalConnection original,
+        CancellationToken cancellationToken)
+    {
+        if (!_config.EnableDomainSniffing
+            || original.RemotePort != 443)
+        {
+            return ClientInitialData.Empty;
+        }
+
+        var buffer = new byte[MaxTlsClientHelloBytes];
+        var used = 0;
+        string? sniHost = null;
+        var parseResult = TlsSniParseResult.NeedMoreData;
+
+        while (used < buffer.Length)
+        {
+            int read;
+            try
+            {
+                read = await ReadTlsProbeBytesAsync(
+                    clientStream,
+                    buffer.AsMemory(used, buffer.Length - used),
+                    used == 0 ? TlsFirstClientDataTimeoutMs : TlsSniContinuationTimeoutMs,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            used += read;
+            parseResult = TryReadTlsSni(buffer.AsSpan(0, used), out sniHost);
+            if (parseResult != TlsSniParseResult.NeedMoreData)
+            {
+                break;
+            }
+        }
+
+        if (used == 0)
+        {
+            _logger.Debug(
+                $"透明 SNI 嗅探无首包: localPort={original.LocalPort}, original={original.RemoteAddress}:{original.RemotePort}, " +
+                $"timeoutMs={TlsFirstClientDataTimeoutMs}");
+            return ClientInitialData.Empty;
+        }
+
+        var normalizedSni = NormalizeSniHost(sniHost);
+        if (normalizedSni is null)
+        {
+            _logger.Debug(
+                $"透明 SNI 嗅探未得到域名: localPort={original.LocalPort}, original={original.RemoteAddress}:{original.RemotePort}, " +
+                $"bytes={used}, result={parseResult}");
+        }
+        else
+        {
+            _logger.Debug(
+                $"透明 SNI 嗅探命中: localPort={original.LocalPort}, original={original.RemoteAddress}:{original.RemotePort}, " +
+                $"host={normalizedSni}, bytes={used}");
+        }
+
+        return new ClientInitialData(buffer[..used], normalizedSni);
+    }
+
+    private static async Task<int> ReadTlsProbeBytesAsync(
+        Stream clientStream,
+        Memory<byte> buffer,
+        int timeoutMs,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeoutMs);
+        return await clientStream.ReadAsync(buffer, timeoutCts.Token);
+    }
+
+    private bool ShouldCloseIdleTlsProbe(OriginalConnection original, ClientInitialData initialClientData)
+    {
+        return ShouldProbeTls(original)
+            && initialClientData.Bytes.Length == 0;
+    }
+
+    private bool ShouldProbeTls(OriginalConnection original)
+    {
+        return _config.EnableDomainSniffing
+            && original.RemotePort == 443;
+    }
+
+    private static ProxyConnectTarget GetProxyConnectTarget(OriginalConnection original, string? sniHost)
+    {
+        return string.IsNullOrWhiteSpace(sniHost)
+            ? ProxyConnectTarget.FromAddress(original.RemoteAddress, original.RemotePort)
+            : ProxyConnectTarget.FromHost(sniHost, original.RemotePort);
+    }
+
+    private static TlsSniParseResult TryReadTlsSni(ReadOnlySpan<byte> data, out string? sniHost)
+    {
+        sniHost = null;
+        if (data.Length < 5)
+        {
+            return TlsSniParseResult.NeedMoreData;
+        }
+
+        if (data[0] != 0x16)
+        {
+            return TlsSniParseResult.NotTls;
+        }
+
+        var recordLength = ReadUInt16(data, 3);
+        if (recordLength <= 0)
+        {
+            return TlsSniParseResult.NoSni;
+        }
+
+        var recordEnd = 5 + recordLength;
+        if (data.Length < recordEnd)
+        {
+            return recordEnd > MaxTlsClientHelloBytes
+                ? TlsSniParseResult.NoSni
+                : TlsSniParseResult.NeedMoreData;
+        }
+
+        var offset = 5;
+        if (data[offset] != 0x01)
+        {
+            return TlsSniParseResult.NotTls;
+        }
+
+        if (recordEnd - offset < 4)
+        {
+            return TlsSniParseResult.NeedMoreData;
+        }
+
+        var handshakeLength = ReadUInt24(data, offset + 1);
+        offset += 4;
+        var handshakeEnd = offset + handshakeLength;
+        if (handshakeEnd > recordEnd)
+        {
+            return data.Length < handshakeEnd && handshakeEnd <= MaxTlsClientHelloBytes
+                ? TlsSniParseResult.NeedMoreData
+                : TlsSniParseResult.NoSni;
+        }
+
+        if (!TrySkip(data, handshakeEnd, ref offset, 2 + 32))
+        {
+            return TlsSniParseResult.NoSni;
+        }
+
+        if (!TryReadLengthPrefixed(data, handshakeEnd, ref offset, 1, out _)
+            || !TryReadLengthPrefixed(data, handshakeEnd, ref offset, 2, out _)
+            || !TryReadLengthPrefixed(data, handshakeEnd, ref offset, 1, out _))
+        {
+            return TlsSniParseResult.NoSni;
+        }
+
+        if (!TryReadLengthPrefixed(data, handshakeEnd, ref offset, 2, out var extensions))
+        {
+            return TlsSniParseResult.NoSni;
+        }
+
+        var extensionOffset = 0;
+        while (extensions.Length - extensionOffset >= 4)
+        {
+            var extensionType = ReadUInt16(extensions, extensionOffset);
+            var extensionLength = ReadUInt16(extensions, extensionOffset + 2);
+            extensionOffset += 4;
+            if (extensionLength > extensions.Length - extensionOffset)
+            {
+                return TlsSniParseResult.NoSni;
+            }
+
+            var extensionData = extensions.Slice(extensionOffset, extensionLength);
+            if (extensionType == 0x0000 && TryReadSniExtension(extensionData, out sniHost))
+            {
+                return TlsSniParseResult.Found;
+            }
+
+            extensionOffset += extensionLength;
+        }
+
+        return TlsSniParseResult.NoSni;
+    }
+
+    private static bool TryReadSniExtension(ReadOnlySpan<byte> extensionData, out string? sniHost)
+    {
+        sniHost = null;
+        if (extensionData.Length < 2)
+        {
+            return false;
+        }
+
+        var listLength = ReadUInt16(extensionData, 0);
+        if (listLength > extensionData.Length - 2)
+        {
+            return false;
+        }
+
+        var offset = 2;
+        var end = 2 + listLength;
+        while (end - offset >= 3)
+        {
+            var nameType = extensionData[offset++];
+            var nameLength = ReadUInt16(extensionData, offset);
+            offset += 2;
+            if (nameLength > end - offset)
+            {
+                return false;
+            }
+
+            if (nameType == 0x00)
+            {
+                sniHost = Encoding.ASCII.GetString(extensionData.Slice(offset, nameLength));
+                return true;
+            }
+
+            offset += nameLength;
+        }
+
+        return false;
+    }
+
+    private static bool TrySkip(ReadOnlySpan<byte> data, int end, ref int offset, int count)
+    {
+        if (count < 0 || offset > end - count)
+        {
+            return false;
+        }
+
+        offset += count;
+        return true;
+    }
+
+    private static bool TryReadLengthPrefixed(
+        ReadOnlySpan<byte> data,
+        int end,
+        ref int offset,
+        int lengthBytes,
+        out ReadOnlySpan<byte> value)
+    {
+        value = default;
+        if (lengthBytes is < 1 or > 2 || offset > end - lengthBytes)
+        {
+            return false;
+        }
+
+        var length = lengthBytes == 1
+            ? data[offset]
+            : ReadUInt16(data, offset);
+        offset += lengthBytes;
+        if (length > end - offset)
+        {
+            return false;
+        }
+
+        value = data.Slice(offset, length);
+        offset += length;
+        return true;
+    }
+
+    private static int ReadUInt16(ReadOnlySpan<byte> data, int offset)
+    {
+        return (data[offset] << 8) | data[offset + 1];
+    }
+
+    private static int ReadUInt24(ReadOnlySpan<byte> data, int offset)
+    {
+        return (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
+    }
+
+    private static string? NormalizeSniHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return null;
+        }
+
+        host = host.Trim().TrimEnd('.').ToLowerInvariant();
+        if (host.Length is 0 or > 253 || IPAddress.TryParse(host, out _))
+        {
+            return null;
+        }
+
+        var previousWasDot = true;
+        foreach (var ch in host)
+        {
+            var valid = ch is >= 'a' and <= 'z'
+                or >= '0' and <= '9'
+                or '-'
+                or '.';
+            if (!valid)
+            {
+                return null;
+            }
+
+            if (ch == '.')
+            {
+                if (previousWasDot)
+                {
+                    return null;
+                }
+
+                previousWasDot = true;
+            }
+            else
+            {
+                previousWasDot = false;
+            }
+        }
+
+        return previousWasDot ? null : host;
+    }
+
+    private static string FormatHost(ProxyConnectTarget target)
+    {
+        return target.Address is { } address
+            ? FormatHost(address)
+            : target.Host;
+    }
+
     private static string FormatHost(IPAddress address)
     {
         return address.AddressFamily == AddressFamily.InterNetworkV6
@@ -593,5 +1095,51 @@ internal sealed class TransparentTcpProxyServer : IAsyncDisposable
         catch (SocketException)
         {
         }
+    }
+
+    private readonly record struct ClientInitialData(byte[] Bytes, string? SniHost)
+    {
+        public static ClientInitialData Empty { get; } = new(Array.Empty<byte>(), null);
+    }
+
+    private readonly record struct ProxyConnectTarget(string Host, ushort Port, IPAddress? Address)
+    {
+        public string Display => $"{Host}:{Port}";
+
+        public static ProxyConnectTarget FromAddress(IPAddress address, ushort port)
+        {
+            return new ProxyConnectTarget(address.ToString(), port, address);
+        }
+
+        public static ProxyConnectTarget FromHost(string host, ushort port)
+        {
+            return new ProxyConnectTarget(host, port, null);
+        }
+    }
+
+    private readonly record struct CopyResult(string Direction, long Bytes, string EndReason);
+
+    private sealed class CopyProgress
+    {
+        private long _lastProgressTick = Environment.TickCount64;
+        private long _totalBytes;
+
+        public long LastProgressTick => Interlocked.Read(ref _lastProgressTick);
+
+        public long TotalBytes => Interlocked.Read(ref _totalBytes);
+
+        public void Report(long totalBytes)
+        {
+            Interlocked.Exchange(ref _totalBytes, totalBytes);
+            Interlocked.Exchange(ref _lastProgressTick, Environment.TickCount64);
+        }
+    }
+
+    private enum TlsSniParseResult
+    {
+        Found,
+        NeedMoreData,
+        NotTls,
+        NoSni
     }
 }

@@ -5,6 +5,7 @@ namespace AppProxyHelper;
 
 public sealed class ProcessProxyLauncher
 {
+    private const int MaxCapturedOutputLineChars = 4096;
     private static readonly TimeSpan OutputDrainTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan OutputStopTimeout = TimeSpan.FromSeconds(1);
 
@@ -25,12 +26,7 @@ public sealed class ProcessProxyLauncher
     {
         if (string.IsNullOrWhiteSpace(_config.TargetPath))
         {
-            if (CanRunByProcessNameTargets())
-            {
-                return await WaitForProcessNameTargetsAsync(cancellationToken);
-            }
-
-            _logger.Error("目标程序不存在: targetPath 为空，且未配置 targetProcessNames。");
+            _logger.Error("目标程序不存在: targetPath 为空。Environment 模式必须由 EasyProxy 启动目标程序，才能注入代理配置。");
             return 2;
         }
 
@@ -78,6 +74,7 @@ public sealed class ProcessProxyLauncher
         _logger.Info($"启动目标程序: {targetPath}");
         _logger.Info($"工作目录: {startInfo.WorkingDirectory}");
         _logger.Debug($"参数数量: {startInfo.ArgumentList.Count}");
+        WarnIfLaunchingPackagedAppDirectly(targetPath);
 
         if (!process.Start())
         {
@@ -142,6 +139,16 @@ public sealed class ProcessProxyLauncher
         }
     }
 
+    private void WarnIfLaunchingPackagedAppDirectly(string targetPath)
+    {
+        if (targetPath.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.Warn(
+                "当前 targetPath 位于 WindowsApps，EasyProxy 会直接以 exe 方式启动目标程序。" +
+                "部分 MSIX/Store 应用可能缺少正常应用激活上下文；如果目标日志出现 helper paths unavailable，建议优先使用 EasyProxy 识别到的 Codex/Cursor/Antigravity 安装路径，或改用非 Store 版本。");
+        }
+    }
+
     private static void SetEnvironment(ProcessStartInfo startInfo, string name, string value)
     {
         startInfo.Environment[name] = value;
@@ -200,7 +207,7 @@ public sealed class ProcessProxyLauncher
                     return;
                 }
 
-                _logger.Info($"target/{name}: {line}");
+                _logger.Info($"target/{name}: {FormatCapturedOutputLine(line)}");
             }
         }
         catch (ObjectDisposedException)
@@ -209,6 +216,17 @@ public sealed class ProcessProxyLauncher
         catch (IOException)
         {
         }
+    }
+
+    private static string FormatCapturedOutputLine(string line)
+    {
+        if (line.Length <= MaxCapturedOutputLineChars)
+        {
+            return line;
+        }
+
+        return line[..MaxCapturedOutputLineChars] +
+            $"... [truncated {line.Length - MaxCapturedOutputLineChars} chars]";
     }
 
     private void CloseCapturedOutput(Process process)
@@ -245,26 +263,4 @@ public sealed class ProcessProxyLauncher
             TaskScheduler.Default);
     }
 
-    private bool CanRunByProcessNameTargets()
-    {
-        return _config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase)
-            && _config.TargetProcessNames.Length > 0;
-    }
-
-    private async Task<int> WaitForProcessNameTargetsAsync(CancellationToken cancellationToken)
-    {
-        _logger.Info($"未配置 targetPath；将按进程名匹配目标: {string.Join(", ", _config.TargetProcessNames)}");
-        _logger.Info("透明拦截保持运行中；按 Ctrl+C 或在界面点击停止来结束。");
-
-        try
-        {
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            return 0;
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.Warn("等待进程名匹配目标时被取消。");
-            return 130;
-        }
-    }
 }

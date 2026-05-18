@@ -94,6 +94,15 @@ public sealed class AppLogger : IDisposable
             }
         }
 
-        MessageWritten?.Invoke(level, exception is null ? line : $"{line}{Environment.NewLine}{exception}");
+        try
+        {
+            MessageWritten?.Invoke(level, exception is null ? line : $"{line}{Environment.NewLine}{exception}");
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 }

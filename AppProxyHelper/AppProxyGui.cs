@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
 
@@ -10,18 +9,18 @@ namespace AppProxyHelper;
 
 public static class AppProxyGui
 {
-    public static void Run(string? configPath, bool autoRun, bool autoRepairEnvironment, bool elevatedStartup)
+    public static void Run(string? configPath, bool autoRun)
     {
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var singleInstance = GuiSingleInstance.Acquire(autoRun || autoRepairEnvironment || elevatedStartup);
+        using var singleInstance = GuiSingleInstance.Acquire(autoRun);
         if (!singleInstance.IsOwner)
         {
             return;
         }
 
-        var form = new AppProxyGuiForm(configPath, autoRun, autoRepairEnvironment);
+        var form = new AppProxyGuiForm(configPath, autoRun);
         singleInstance.Attach(
             form,
             () => form.CanCloseForElevatedRestart,
@@ -34,30 +33,19 @@ public static class AppProxyGui
 internal sealed class AppProxyGuiForm : Form
 {
     private const int SwRestore = 9;
-    private enum ElevatedAction
-    {
-        None,
-        AutoRun,
-        RepairEnvironment
-    }
-
-    private const int ErrorCancelled = 1223;
     private const int MainWindowWidth = 1040;
     private const int MainWindowHeight = 740;
     private const int MainActionBarHeight = 42;
     private const int CompactRowHeight = 36;
     private const int ButtonHeight = 32;
     private const int HomeProxyHeight = 80;
-    private const int TargetSourceHeight = 158;
+    private const int TargetSourceHeight = 120;
     private const int ConfigGroupHeight = 82;
-    private const int EnvironmentRepairGroupHeight = 86;
     private const string ManualTargetPresetText = "手动选择";
 
     private readonly TextBox _configPathText = new();
-    private readonly ComboBox _modeCombo = new();
     private readonly ComboBox _targetPresetCombo = new();
     private readonly TextBox _targetPathText = new();
-    private readonly TextBox _targetProcessNamesText = new();
     private readonly TextBox _targetArgumentsText = new();
     private readonly TextBox _workingDirectoryText = new();
     private readonly TextBox _proxyUriText = new();
@@ -73,47 +61,26 @@ internal sealed class AppProxyGuiForm : Form
     private readonly NumericUpDown _tcpConnectTimeoutNumber = new();
     private readonly CheckBox _testProxyHandshakeCheck = new();
     private readonly CheckBox _testProxyConnectCheck = new();
+    private readonly CheckBox _testProxyTlsHandshakeCheck = new();
     private readonly TextBox _connectTestHostText = new();
     private readonly NumericUpDown _connectTestPortNumber = new();
 
-    private readonly TextBox _providerText = new();
-    private readonly TextBox _driverPathText = new();
-    private readonly TextBox _redirectAddressText = new();
-    private readonly NumericUpDown _redirectPortNumber = new();
-    private readonly NumericUpDown _winDivertPriorityNumber = new();
-    private readonly NumericUpDown _flowAssociationTimeoutNumber = new();
-    private readonly NumericUpDown _proxyLookupTimeoutNumber = new();
-    private readonly NumericUpDown _proxyConnectTimeoutNumber = new();
-    private readonly NumericUpDown _listenBacklogNumber = new();
-    private readonly NumericUpDown _packetBufferSizeNumber = new();
-    private readonly NumericUpDown _queueLengthNumber = new();
-    private readonly NumericUpDown _queueTimeNumber = new();
-    private readonly NumericUpDown _queueSizeNumber = new();
-    private readonly CheckBox _captureUdpCheck = new();
-    private readonly NumericUpDown _udpIdleTimeoutNumber = new();
-    private readonly CheckBox _trackChildProcessesCheck = new();
-    private readonly TextBox _excludedChildProcessNamesText = new();
-
-    private readonly Panel _transparentPanel = new();
     private readonly TextBox _logText = new();
     private readonly Label _statusLabel = new();
     private readonly Button _checkButton = new();
-    private readonly Button _environmentRepairButton = new();
     private readonly Button _runButton = new();
     private readonly Button _stopButton = new();
-    private Button? _selectProcessButton;
     private readonly MenuStrip _mainMenu = new();
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly List<TargetApplicationPreset> _targetPresets = new();
     private CancellationTokenSource? _operationCts;
     private bool _updatingTargetPreset;
-    private bool _elevationInProgress;
     private bool _allowClose;
 
     internal bool CanCloseForElevatedRestart => _operationCts is null;
 
-    public AppProxyGuiForm(string? initialConfigPath, bool autoRun, bool autoRepairEnvironment)
+    public AppProxyGuiForm(string? initialConfigPath, bool autoRun)
     {
         Text = "EasyProxy";
         StartPosition = FormStartPosition.CenterScreen;
@@ -144,11 +111,7 @@ internal sealed class AppProxyGuiForm : Form
             SetStatus("就绪。");
         }
 
-        if (autoRepairEnvironment)
-        {
-            Shown += AutoRepairEnvironmentOnShown;
-        }
-        else if (autoRun)
+        if (autoRun)
         {
             Shown += AutoRunOnShown;
         }
@@ -183,7 +146,7 @@ internal sealed class AppProxyGuiForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!_allowClose && !_elevationInProgress && e.CloseReason == CloseReason.UserClosing)
+        if (!_allowClose && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
             MinimizeToTray();
@@ -222,6 +185,13 @@ internal sealed class AppProxyGuiForm : Form
         _trayIcon.Icon = Icon ?? SystemIcons.Application;
         _trayIcon.ContextMenuStrip = _trayMenu;
         _trayIcon.Visible = true;
+        _trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                RestoreFromTray();
+            }
+        };
         _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
     }
 
@@ -246,16 +216,23 @@ internal sealed class AppProxyGuiForm : Form
             return;
         }
 
-        if (WindowState == FormWindowState.Minimized)
+        ShowInTaskbar = true;
+        if (!Visible)
         {
-            WindowState = FormWindowState.Normal;
+            Show();
         }
 
-        ShowInTaskbar = true;
-        Show();
-        Activate();
+        WindowState = FormWindowState.Normal;
         NativeMethods.ShowWindow(Handle, SwRestore);
         BringToFront();
+        if (!TopMost)
+        {
+            TopMost = true;
+            TopMost = false;
+        }
+
+        Activate();
+        NativeMethods.SetForegroundWindow(Handle);
     }
 
     private void ExitFromTray()
@@ -291,7 +268,6 @@ internal sealed class AppProxyGuiForm : Form
         tabs.TabPages.Add(BuildHomeTab());
         tabs.TabPages.Add(BuildAdvancedTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
-        tabs.TabPages.Add(BuildTransparentTab());
         content.Controls.Add(tabs);
         root.Controls.Add(content, 0, 1);
     }
@@ -472,7 +448,7 @@ internal sealed class AppProxyGuiForm : Form
     {
         var group = new GroupBox
         {
-            Text = "目标应用",
+            Text = "Electron 应用",
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 6)
         };
@@ -483,11 +459,7 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureTargetPresetCombo();
         AddRow(table, 0, "常用应用", _targetPresetCombo);
 
-        AddRow(table, 1, "手动 exe", _targetPathText, MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*")));
-
-        _selectProcessButton = MakeButton("从进程中选择");
-        _selectProcessButton.Click += (_, _) => SelectTargetProcesses();
-        AddRow(table, 2, "运行中进程", _targetProcessNamesText, _selectProcessButton);
+        AddRow(table, 1, "目标 exe", _targetPathText, MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*")));
 
         return group;
     }
@@ -501,20 +473,16 @@ internal sealed class AppProxyGuiForm : Form
             Margin = new Padding(0)
         };
 
-        var table = MakeSingleColumnTable(7);
+        var table = MakeSingleColumnTable(6);
         group.Controls.Add(table);
 
-        ConfigureCombo(_modeCombo, "Transparent", "Environment");
-        _modeCombo.SelectedIndexChanged += (_, _) => RefreshModeState();
-        AddRow(table, 0, "模式", _modeCombo);
-
-        AddRow(table, 1, "启动参数", _targetArgumentsText);
-        AddRow(table, 2, "工作目录", _workingDirectoryText, MakeBrowseButton(() => BrowseFolder(_workingDirectoryText)));
-        AddRow(table, 3, "NO_PROXY", _noProxyText);
-        AddRow(table, 4, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
+        AddRow(table, 0, "启动参数", _targetArgumentsText);
+        AddRow(table, 1, "工作目录", _workingDirectoryText, MakeBrowseButton(() => BrowseFolder(_workingDirectoryText)));
+        AddRow(table, 2, "NO_PROXY", _noProxyText);
+        AddRow(table, 3, "日志目录", _logDirectoryText, MakeBrowseButton(() => BrowseFolder(_logDirectoryText)));
 
         ConfigureCombo(_minimumLogLevelCombo, "Debug", "Information", "Warning", "Error");
-        AddRow(table, 5, "日志级别", _minimumLogLevelCombo);
+        AddRow(table, 4, "日志级别", _minimumLogLevelCombo);
 
         var checks = new FlowLayoutPanel
         {
@@ -524,19 +492,17 @@ internal sealed class AppProxyGuiForm : Form
             Margin = new Padding(3, 1, 3, 1)
         };
         ConfigureCheck(_captureChildOutputCheck, "捕获输出");
-        ConfigureCheck(_injectProxyEnvironmentCheck, "注入环境变量");
         ConfigureCheck(_waitForExitCheck, "等待退出");
         ConfigureCheck(_runDiagnosticsCheck, "启动前诊断");
         ConfigureCheck(_abortOnDiagnosticsFailCheck, "诊断失败中止");
         checks.Controls.AddRange(new Control[]
         {
             _captureChildOutputCheck,
-            _injectProxyEnvironmentCheck,
             _waitForExitCheck,
             _runDiagnosticsCheck,
             _abortOnDiagnosticsFailCheck
         });
-        AddWideRow(table, 6, "运行选项", checks);
+        AddWideRow(table, 5, "运行选项", checks);
 
         return group;
     }
@@ -548,14 +514,11 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 1,
             Padding = new Padding(6)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, EnvironmentRepairGroupHeight));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(root);
-
-        root.Controls.Add(BuildEnvironmentRepairGroup(), 0, 0);
 
         var group = new GroupBox
         {
@@ -563,9 +526,9 @@ internal sealed class AppProxyGuiForm : Form
             Dock = DockStyle.Fill,
             Margin = new Padding(0)
         };
-        var table = MakeSingleColumnTable(5);
+        var table = MakeSingleColumnTable(6);
         group.Controls.Add(table);
-        root.Controls.Add(group, 0, 1);
+        root.Controls.Add(group, 0, 0);
 
         ConfigureNumber(_tcpConnectTimeoutNumber, 100, 120000, 3000);
         AddRow(table, 0, "TCP 超时 ms", _tcpConnectTimeoutNumber);
@@ -576,111 +539,13 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureCheck(_testProxyConnectCheck, "测试经代理连接");
         AddRow(table, 2, "CONNECT", _testProxyConnectCheck);
 
-        AddRow(table, 3, "测试主机", _connectTestHostText);
+        ConfigureCheck(_testProxyTlsHandshakeCheck, "测试 TLS 握手");
+        AddRow(table, 3, "TLS", _testProxyTlsHandshakeCheck);
+
+        AddRow(table, 4, "测试主机", _connectTestHostText);
 
         ConfigureNumber(_connectTestPortNumber, 1, 65535, 443);
-        AddRow(table, 4, "测试端口", _connectTestPortNumber);
-        return page;
-    }
-
-    private Control BuildEnvironmentRepairGroup()
-    {
-        var group = new GroupBox
-        {
-            Text = "WinDivert 环境",
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, 6)
-        };
-
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            Padding = new Padding(6)
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        ConfigureButton(_environmentRepairButton, "环境修复");
-        _environmentRepairButton.Click += async (_, _) => await ConfirmAndRunEnvironmentRepairAsync();
-        panel.Controls.Add(_environmentRepairButton, 0, 0);
-
-        group.Controls.Add(panel);
-        return group;
-    }
-
-    private TabPage BuildTransparentTab()
-    {
-        var page = new TabPage("透明拦截");
-        _transparentPanel.Dock = DockStyle.Fill;
-        _transparentPanel.Margin = new Padding(0);
-        page.Controls.Add(_transparentPanel);
-
-        var table = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 6,
-            RowCount = 10,
-            Padding = new Padding(6)
-        };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
-        for (var i = 0; i < 9; i++)
-        {
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
-        }
-        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        _transparentPanel.Controls.Add(table);
-
-        _providerText.ReadOnly = true;
-        AddPairRow(
-            table,
-            0,
-            "Provider",
-            _providerText,
-            null,
-            "WinDivert DLL",
-            _driverPathText,
-            MakeBrowseButton(() => BrowseFile(_driverPathText, "WinDivert.dll|WinDivert.dll|DLL 文件 (*.dll)|*.dll|所有文件 (*.*)|*.*")));
-
-        ConfigureNumber(_redirectPortNumber, 1, 65535, 19080);
-        AddPairRow(table, 1, "监听地址", _redirectAddressText, null, "监听端口", _redirectPortNumber, null);
-
-        ConfigureNumber(_winDivertPriorityNumber, -1000, 1000, 0);
-        ConfigureCheck(_captureUdpCheck, "捕获 UDP");
-        AddPairRow(table, 2, "优先级", _winDivertPriorityNumber, null, "UDP", _captureUdpCheck, null);
-
-        ConfigureNumber(_flowAssociationTimeoutNumber, 0, 60000, 0);
-        ConfigureNumber(_proxyLookupTimeoutNumber, 0, 120000, 3000);
-        AddPairRow(table, 3, "Flow 关联 ms", _flowAssociationTimeoutNumber, null, "映射等待 ms", _proxyLookupTimeoutNumber, null);
-
-        ConfigureNumber(_proxyConnectTimeoutNumber, 100, 120000, 10000);
-        ConfigureNumber(_udpIdleTimeoutNumber, 1000, 86400000, 60000);
-        AddPairRow(table, 4, "代理连接 ms", _proxyConnectTimeoutNumber, null, "UDP 空闲 ms", _udpIdleTimeoutNumber, null);
-
-        ConfigureNumber(_listenBacklogNumber, 1, 8192, 512);
-        ConfigureNumber(_packetBufferSizeNumber, 1500, 1048576, 65535);
-        AddPairRow(table, 5, "Listen backlog", _listenBacklogNumber, null, "包缓冲", _packetBufferSizeNumber, null);
-
-        ConfigureNumber(_queueLengthNumber, 1, 65535, 4096);
-        ConfigureNumber(_queueTimeNumber, 1, 60000, 2048);
-        AddPairRow(table, 6, "队列长度", _queueLengthNumber, null, "队列时间 ms", _queueTimeNumber, null);
-
-        ConfigureNumber(_queueSizeNumber, 1, int.MaxValue, 4 * 1024 * 1024);
-        ConfigureCheck(_trackChildProcessesCheck, "跟踪子进程");
-        AddPairRow(table, 7, "队列字节", _queueSizeNumber, null, "子进程", _trackChildProcessesCheck, null);
-
-        table.Controls.Add(MakeLabel("排除子进程"), 0, 8);
-        ConfigureCellControl(_excludedChildProcessNamesText);
-        table.Controls.Add(_excludedChildProcessNamesText, 1, 8);
-        table.SetColumnSpan(_excludedChildProcessNamesText, 5);
+        AddRow(table, 5, "测试端口", _connectTestPortNumber);
         return page;
     }
 
@@ -702,7 +567,7 @@ internal sealed class AppProxyGuiForm : Form
         panel.Controls.Add(_checkButton, 0, 0);
 
         ConfigureButton(_runButton, "启动");
-        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync, ElevatedAction.AutoRun);
+        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync);
         panel.Controls.Add(_runButton, 1, 0);
 
         ConfigureButton(_stopButton, "停止");
@@ -769,8 +634,6 @@ internal sealed class AppProxyGuiForm : Form
         }
         catch (Exception ex)
         {
-            _elevationInProgress = false;
-            SetElevationRequestState(pending: false);
             MessageBox.Show(this, ex.Message, "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
@@ -813,16 +676,16 @@ internal sealed class AppProxyGuiForm : Form
     {
         return new AppProxyConfig
         {
-            Mode = SelectedText(_modeCombo, "Transparent"),
+            Mode = "Environment",
             TargetPath = _targetPathText.Text.Trim(),
-            TargetProcessNames = SplitCsv(_targetProcessNamesText.Text),
+            TargetProcessNames = Array.Empty<string>(),
             TargetArguments = SplitArguments(_targetArgumentsText.Text),
             WorkingDirectory = string.IsNullOrWhiteSpace(_workingDirectoryText.Text) ? null : _workingDirectoryText.Text.Trim(),
             ProxyUri = _proxyUriText.Text.Trim(),
             LogDirectory = _logDirectoryText.Text.Trim(),
             MinimumLogLevel = SelectedText(_minimumLogLevelCombo, "Information"),
             CaptureChildOutput = _captureChildOutputCheck.Checked,
-            InjectProxyEnvironment = _injectProxyEnvironmentCheck.Checked,
+            InjectProxyEnvironment = true,
             WaitForExit = _waitForExitCheck.Checked,
             RunDiagnosticsBeforeLaunch = _runDiagnosticsCheck.Checked,
             AbortLaunchWhenDiagnosticsFail = _abortOnDiagnosticsFailCheck.Checked,
@@ -832,37 +695,16 @@ internal sealed class AppProxyGuiForm : Form
                 TcpConnectTimeoutMs = NumberValue(_tcpConnectTimeoutNumber),
                 TestProxyHandshake = _testProxyHandshakeCheck.Checked,
                 TestProxyConnect = _testProxyConnectCheck.Checked,
+                TestProxyTlsHandshake = _testProxyTlsHandshakeCheck.Checked,
                 ConnectTestHost = _connectTestHostText.Text.Trim(),
                 ConnectTestPort = NumberValue(_connectTestPortNumber)
-            },
-            Transparent = new TransparentInterceptionConfig
-            {
-                Provider = string.IsNullOrWhiteSpace(_providerText.Text) ? "WinDivert" : _providerText.Text.Trim(),
-                DriverPath = _driverPathText.Text.Trim(),
-                RedirectListenAddress = _redirectAddressText.Text.Trim(),
-                RedirectListenPort = NumberValue(_redirectPortNumber),
-                WinDivertPriority = NumberValue(_winDivertPriorityNumber),
-                FlowAssociationTimeoutMs = NumberValue(_flowAssociationTimeoutNumber),
-                ProxyLookupTimeoutMs = NumberValue(_proxyLookupTimeoutNumber),
-                ProxyConnectTimeoutMs = NumberValue(_proxyConnectTimeoutNumber),
-                ListenBacklog = NumberValue(_listenBacklogNumber),
-                PacketBufferSize = NumberValue(_packetBufferSizeNumber),
-                QueueLength = NumberValue(_queueLengthNumber),
-                QueueTimeMs = NumberValue(_queueTimeNumber),
-                QueueSizeBytes = NumberValue(_queueSizeNumber),
-                CaptureUdp = _captureUdpCheck.Checked,
-                UdpIdleTimeoutMs = NumberValue(_udpIdleTimeoutNumber),
-                TrackChildProcesses = _trackChildProcessesCheck.Checked,
-                ExcludedChildProcessNames = SplitCsv(_excludedChildProcessNamesText.Text)
             }
         };
     }
 
     private void Populate(AppProxyConfig config)
     {
-        SelectCombo(_modeCombo, config.Mode);
         _targetPathText.Text = config.TargetPath;
-        _targetProcessNamesText.Text = string.Join(", ", config.TargetProcessNames);
         _targetArgumentsText.Text = FormatArguments(config.TargetArguments);
         _workingDirectoryText.Text = config.WorkingDirectory ?? "";
         RefreshTargetPresetSelection(config.TargetPath);
@@ -870,7 +712,7 @@ internal sealed class AppProxyGuiForm : Form
         _logDirectoryText.Text = config.LogDirectory;
         SelectCombo(_minimumLogLevelCombo, config.MinimumLogLevel);
         _captureChildOutputCheck.Checked = config.CaptureChildOutput;
-        _injectProxyEnvironmentCheck.Checked = config.InjectProxyEnvironment;
+        _injectProxyEnvironmentCheck.Checked = true;
         _waitForExitCheck.Checked = config.WaitForExit;
         _runDiagnosticsCheck.Checked = config.RunDiagnosticsBeforeLaunch;
         _abortOnDiagnosticsFailCheck.Checked = config.AbortLaunchWhenDiagnosticsFail;
@@ -879,83 +721,22 @@ internal sealed class AppProxyGuiForm : Form
         _tcpConnectTimeoutNumber.Value = Clamp(config.Diagnostics.TcpConnectTimeoutMs, _tcpConnectTimeoutNumber);
         _testProxyHandshakeCheck.Checked = config.Diagnostics.TestProxyHandshake;
         _testProxyConnectCheck.Checked = config.Diagnostics.TestProxyConnect;
+        _testProxyTlsHandshakeCheck.Checked = config.Diagnostics.TestProxyTlsHandshake;
         _connectTestHostText.Text = config.Diagnostics.ConnectTestHost;
         _connectTestPortNumber.Value = Clamp(config.Diagnostics.ConnectTestPort, _connectTestPortNumber);
-
-        _providerText.Text = config.Transparent.Provider;
-        _driverPathText.Text = config.Transparent.DriverPath;
-        _redirectAddressText.Text = config.Transparent.RedirectListenAddress;
-        _redirectPortNumber.Value = Clamp(config.Transparent.RedirectListenPort, _redirectPortNumber);
-        _winDivertPriorityNumber.Value = Clamp(config.Transparent.WinDivertPriority, _winDivertPriorityNumber);
-        _flowAssociationTimeoutNumber.Value = Clamp(config.Transparent.FlowAssociationTimeoutMs, _flowAssociationTimeoutNumber);
-        _proxyLookupTimeoutNumber.Value = Clamp(config.Transparent.ProxyLookupTimeoutMs, _proxyLookupTimeoutNumber);
-        _proxyConnectTimeoutNumber.Value = Clamp(config.Transparent.ProxyConnectTimeoutMs, _proxyConnectTimeoutNumber);
-        _listenBacklogNumber.Value = Clamp(config.Transparent.ListenBacklog, _listenBacklogNumber);
-        _packetBufferSizeNumber.Value = Clamp(config.Transparent.PacketBufferSize, _packetBufferSizeNumber);
-        _queueLengthNumber.Value = Clamp(config.Transparent.QueueLength, _queueLengthNumber);
-        _queueTimeNumber.Value = Clamp(config.Transparent.QueueTimeMs, _queueTimeNumber);
-        _queueSizeNumber.Value = Clamp(config.Transparent.QueueSizeBytes, _queueSizeNumber);
-        _captureUdpCheck.Checked = config.Transparent.CaptureUdp;
-        _udpIdleTimeoutNumber.Value = Clamp(config.Transparent.UdpIdleTimeoutMs, _udpIdleTimeoutNumber);
-        _trackChildProcessesCheck.Checked = config.Transparent.TrackChildProcesses;
-        _excludedChildProcessNamesText.Text = string.Join(", ", config.Transparent.ExcludedChildProcessNames);
-        RefreshModeState();
     }
 
     private async void AutoRunOnShown(object? sender, EventArgs eventArgs)
     {
         Shown -= AutoRunOnShown;
-        await RunOperationAsync("启动", RunTargetAsync, ElevatedAction.AutoRun);
-    }
-
-    private async void AutoRepairEnvironmentOnShown(object? sender, EventArgs eventArgs)
-    {
-        Shown -= AutoRepairEnvironmentOnShown;
-        await RunOperationAsync(
-            "环境修复",
-            RunEnvironmentRepairAsync,
-            ElevatedAction.None,
-            showCompletionDialog: true);
-    }
-
-    private async Task ConfirmAndRunEnvironmentRepairAsync()
-    {
-        if (_operationCts is not null || _elevationInProgress)
-        {
-            ActivateCurrentWindow();
-            return;
-        }
-
-        var result = MessageBox.Show(
-            this,
-            "环境修复会检查 WinDivert 运行环境，并可能修改 Windows 服务启动类型：\r\n\r\n"
-            + "- Base Filtering Engine 被禁用时会改为自动启动。\r\n"
-            + "- WinDivert 服务被禁用时会改为手动启动。\r\n\r\n"
-            + "如果当前不是管理员权限，程序会请求 UAC 授权后继续。是否开始修复？",
-            "确认环境修复",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (result != DialogResult.Yes)
-        {
-            SetStatus("已取消环境修复。");
-            return;
-        }
-
-        await RunOperationAsync(
-            "环境修复",
-            RunEnvironmentRepairAsync,
-            ElevatedAction.RepairEnvironment,
-            showCompletionDialog: true);
+        await RunOperationAsync("启动", RunTargetAsync);
     }
 
     private async Task RunOperationAsync(
         string name,
-        Func<LoadedConfig, AppLogger, CancellationToken, Task<int>> operation,
-        ElevatedAction elevatedAction = ElevatedAction.None,
-        bool showCompletionDialog = false)
+        Func<LoadedConfig, AppLogger, CancellationToken, Task<int>> operation)
     {
-        if (_operationCts is not null || _elevationInProgress)
+        if (_operationCts is not null)
         {
             ActivateCurrentWindow();
             return;
@@ -979,16 +760,8 @@ internal sealed class AppProxyGuiForm : Form
             return;
         }
 
-        if (elevatedAction != ElevatedAction.None && ShouldRequestElevation(loaded.Value))
-        {
-            RequestElevatedAction(loaded.ConfigPath, elevatedAction);
-            return;
-        }
-
         _operationCts = new CancellationTokenSource();
         SetOperationState(running: true, name);
-        int? completionExitCode = null;
-        string? completionLogFilePath = null;
 
         try
         {
@@ -1000,8 +773,6 @@ internal sealed class AppProxyGuiForm : Form
             var exitCode = await operation(loaded, logger, _operationCts.Token);
             AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Information] {name}完成，退出码: {exitCode}");
             SetStatus($"{name}完成，退出码 {exitCode}。");
-            completionExitCode = exitCode;
-            completionLogFilePath = logger.LogFilePath;
         }
         catch (OperationCanceledException)
         {
@@ -1020,30 +791,6 @@ internal sealed class AppProxyGuiForm : Form
             _operationCts = null;
             SetOperationState(running: false, name);
         }
-
-        if (showCompletionDialog && completionExitCode is int exitCodeForDialog)
-        {
-            ShowOperationResultDialog(name, exitCodeForDialog, completionLogFilePath);
-        }
-    }
-
-    private void ShowOperationResultDialog(string name, int exitCode, string? logFilePath)
-    {
-        var succeeded = exitCode == 0;
-        var message = succeeded
-            ? $"{name}完成，环境检测已通过或已修复可自动处理的问题。\r\n\r\n日志文件:\r\n{logFilePath ?? "-"}"
-            : $"{name}已运行，但仍有需要人工处理的问题。\r\n\r\n"
-              + $"退出码: {exitCode}\r\n"
-              + $"日志文件:\r\n{logFilePath ?? "-"}\r\n\r\n"
-              + "如果日志中出现 Win32Error=1072，说明 WinDivert 服务已被 Windows 标记为删除；请重启电脑后再次运行环境修复或启动。\r\n"
-              + "如果日志中出现 577 或 1275，通常是系统安全策略或安全软件阻止了 WinDivert 驱动。";
-
-        MessageBox.Show(
-            this,
-            message,
-            succeeded ? $"{name}完成" : $"{name}需要处理",
-            MessageBoxButtons.OK,
-            succeeded ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private static async Task<int> RunCheckAsync(
@@ -1053,14 +800,6 @@ internal sealed class AppProxyGuiForm : Form
     {
         var ok = await ProxyDiagnostics.CheckAsync(loadedConfig.Value, logger, cancellationToken);
         return ok ? 0 : 3;
-    }
-
-    private static Task<int> RunEnvironmentRepairAsync(
-        LoadedConfig loadedConfig,
-        AppLogger logger,
-        CancellationToken cancellationToken)
-    {
-        return WinDivertEnvironmentRepair.CheckAndRepairAsync(loadedConfig, logger, cancellationToken);
     }
 
     private static async Task<int> RunTargetAsync(
@@ -1090,114 +829,14 @@ internal sealed class AppProxyGuiForm : Form
         return await launcher.RunAsync(cancellationToken);
     }
 
-    private void RequestElevatedAction(string configPath, ElevatedAction action)
-    {
-        if (_elevationInProgress)
-        {
-            ActivateCurrentWindow();
-            return;
-        }
-
-        _elevationInProgress = true;
-        SetElevationRequestState(pending: true);
-
-        try
-        {
-            var executablePath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(executablePath))
-            {
-                executablePath = Application.ExecutablePath;
-            }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = executablePath,
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = Path.GetDirectoryName(executablePath) ?? Environment.CurrentDirectory
-            };
-            startInfo.ArgumentList.Add("ui");
-            startInfo.ArgumentList.Add("--config");
-            startInfo.ArgumentList.Add(configPath);
-            if (action == ElevatedAction.AutoRun)
-            {
-                startInfo.ArgumentList.Add("--autorun");
-            }
-            else if (action == ElevatedAction.RepairEnvironment)
-            {
-                startInfo.ArgumentList.Add("--repair-env");
-            }
-
-            if (Process.Start(startInfo) is null)
-            {
-                throw new InvalidOperationException("无法启动管理员权限实例。");
-            }
-
-            BeginInvoke(new Action(Close));
-
-            var actionText = action == ElevatedAction.RepairEnvironment
-                ? "自动执行环境修复"
-                : "自动启动目标应用";
-            AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Information] 已请求管理员权限，新窗口将{actionText}。");
-            SetStatus("已请求管理员权限，请在新窗口查看运行状态。");
-        }
-        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelled)
-        {
-            _elevationInProgress = false;
-            SetElevationRequestState(pending: false);
-            AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Warning] 已取消管理员权限请求。");
-            SetStatus("已取消管理员权限请求。");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [Error] 请求管理员权限失败: {ex}");
-            MessageBox.Show(this, ex.Message, "请求管理员权限失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            SetStatus("请求管理员权限失败。");
-        }
-    }
-
-    private static bool ShouldRequestElevation(AppProxyConfig config)
-    {
-        return OperatingSystem.IsWindows()
-            && config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase)
-            && !IsAdministrator();
-    }
-
-    private static bool IsAdministrator()
-    {
-        try
-        {
-            using var identity = WindowsIdentity.GetCurrent();
-            var principal = new WindowsPrincipal(identity);
-            return principal.IsInRole(WindowsBuiltInRole.Administrator);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private void SetOperationState(bool running, string name)
     {
         _checkButton.Enabled = !running;
-        _environmentRepairButton.Enabled = !running;
         _runButton.Enabled = !running;
         _stopButton.Enabled = running;
         if (running)
         {
             SetStatus($"{name}中...");
-        }
-    }
-
-    private void SetElevationRequestState(bool pending)
-    {
-        _checkButton.Enabled = !pending && _operationCts is null;
-        _environmentRepairButton.Enabled = !pending && _operationCts is null;
-        _runButton.Enabled = !pending && _operationCts is null;
-        _stopButton.Enabled = _operationCts is not null;
-        if (pending)
-        {
-            SetStatus("已请求管理员权限，请完成 UAC 确认。");
         }
     }
 
@@ -1212,22 +851,26 @@ internal sealed class AppProxyGuiForm : Form
         RestoreFromTray();
     }
 
-    private void RefreshModeState()
-    {
-        var transparent = SelectedText(_modeCombo, "Transparent").Equals("Transparent", StringComparison.OrdinalIgnoreCase);
-        _transparentPanel.Enabled = transparent;
-        _targetProcessNamesText.Enabled = transparent;
-        if (_selectProcessButton is not null)
-        {
-            _selectProcessButton.Enabled = transparent;
-        }
-    }
-
     private void AppendLog(string text)
     {
+        if (IsDisposed || Disposing || _logText.IsDisposed)
+        {
+            return;
+        }
+
         if (InvokeRequired)
         {
-            BeginInvoke(new Action<string>(AppendLog), text);
+            try
+            {
+                BeginInvoke(new Action<string>(AppendLog), text);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
             return;
         }
 
@@ -1337,18 +980,6 @@ internal sealed class AppProxyGuiForm : Form
         }
     }
 
-    private void SelectTargetProcesses()
-    {
-        using var dialog = new ProcessSelectionDialog(SplitCsv(_targetProcessNamesText.Text));
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
-        }
-
-        _targetProcessNamesText.Text = string.Join(", ", dialog.SelectedProcessNames);
-        SetStatus($"已选择 {dialog.SelectedProcessNames.Length} 个运行中进程。");
-    }
-
     private void ConfigureTargetPresetCombo()
     {
         _targetPresetCombo.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -1394,10 +1025,7 @@ internal sealed class AppProxyGuiForm : Form
     {
         _targetPathText.Text = preset.ExecutablePath;
         _workingDirectoryText.Text = Path.GetDirectoryName(preset.ExecutablePath) ?? "";
-        if (preset.Arguments.Length > 0 && string.IsNullOrWhiteSpace(_targetArgumentsText.Text))
-        {
-            _targetArgumentsText.Text = FormatArguments(preset.Arguments);
-        }
+        _targetArgumentsText.Text = FormatArguments(BuildChromiumArgumentsForCurrentProxy());
 
         SetStatus($"已选择常用应用: {preset.Name}");
     }
@@ -1443,15 +1071,18 @@ internal sealed class AppProxyGuiForm : Form
     private static IReadOnlyList<TargetApplicationPreset> FindTargetApplicationPresets()
     {
         var presets = new List<TargetApplicationPreset>();
-        AddTargetPreset(presets, "Codex 应用", GetCodexCandidates(), "--disable-quic");
-        AddTargetPreset(presets, "Steam", GetSteamCandidates());
-        AddTargetPreset(presets, "Google Chrome", GetChromeCandidates(), "--disable-quic");
-        AddTargetPreset(presets, "Microsoft Edge", GetEdgeCandidates(), "--disable-quic");
-        AddTargetPreset(presets, "Mozilla Firefox", GetFirefoxCandidates());
-        AddTargetPreset(presets, "Brave Browser", GetBraveCandidates(), "--disable-quic");
-        AddTargetPreset(presets, "Cursor 应用", GetCursorCandidates(), "--disable-quic");
-        AddTargetPreset(presets, "Antigravity 应用", GetAntigravityCandidates(), "--disable-quic");
+        AddTargetPreset(presets, "Codex 应用", GetCodexCandidates());
+        AddTargetPreset(presets, "Cursor 应用", GetCursorCandidates());
+        AddTargetPreset(presets, "Antigravity 应用", GetAntigravityCandidates());
         return presets;
+    }
+
+    private string[] BuildChromiumArgumentsForCurrentProxy()
+    {
+        var proxyUri = string.IsNullOrWhiteSpace(_proxyUriText.Text)
+            ? new AppProxyConfig().ProxyUri
+            : _proxyUriText.Text.Trim();
+        return ConfigLoader.BuildDefaultChromiumProxyArguments(proxyUri);
     }
 
     private static void AddTargetPreset(
@@ -1534,70 +1165,6 @@ internal sealed class AppProxyGuiForm : Form
         {
             yield return Path.Combine(localAppData, "Programs", "Codex", "Codex.exe");
             yield return Path.Combine(localAppData, "Programs", "codex", "Codex.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetSteamCandidates()
-    {
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Steam", "steam.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetChromeCandidates()
-    {
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Google", "Chrome", "Application", "chrome.exe");
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Google", "Chrome", "Application", "chrome.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetEdgeCandidates()
-    {
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe");
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Microsoft", "Edge", "Application", "msedge.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetFirefoxCandidates()
-    {
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Mozilla Firefox", "firefox.exe");
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Mozilla Firefox", "firefox.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetBraveCandidates()
-    {
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe");
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe");
         }
     }
 
@@ -1730,13 +1297,13 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 4,
+            RowCount = 3,
             Padding = new Padding(6, 8, 6, 4)
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < 2; i++)
         {
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
         }
@@ -2045,335 +1612,6 @@ internal sealed class AppProxyGuiForm : Form
         return !string.IsNullOrEmpty(root) && !root.StartsWith(@"\\", StringComparison.Ordinal);
     }
 
-    private sealed class ProcessSelectionDialog : Form
-    {
-        private readonly TextBox _filterText = new();
-        private readonly ListView _processList = new();
-        private readonly Button _okButton = new();
-        private readonly Button _refreshButton = new();
-        private readonly ListViewGroup _applicationGroup = new("应用", HorizontalAlignment.Left);
-        private readonly ListViewGroup _backgroundGroup = new("后台进程", HorizontalAlignment.Left);
-        private readonly HashSet<string> _checkedProcessNames;
-        private readonly List<ProcessListItem> _processes = new();
-        private bool _updatingList;
-
-        public ProcessSelectionDialog(IEnumerable<string> selectedProcessNames)
-        {
-            _checkedProcessNames = selectedProcessNames
-                .Select(NormalizeProcessName)
-                .Where(static name => !string.IsNullOrWhiteSpace(name))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            Text = "从进程中选择";
-            StartPosition = FormStartPosition.CenterParent;
-            MinimizeBox = false;
-            MaximizeBox = true;
-            ShowInTaskbar = false;
-            Size = new Size(760, 520);
-            MinimumSize = new Size(620, 380);
-
-            BuildUi();
-            LoadProcesses();
-        }
-
-        public string[] SelectedProcessNames { get; private set; } = Array.Empty<string>();
-
-        private void BuildUi()
-        {
-            var root = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 3,
-                Padding = new Padding(8)
-            };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            Controls.Add(root);
-
-            var filterRow = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3
-            };
-            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
-            filterRow.Controls.Add(MakeLabel("筛选"), 0, 0);
-            _filterText.Dock = DockStyle.Fill;
-            _filterText.TextChanged += (_, _) => ApplyFilter();
-            filterRow.Controls.Add(_filterText, 1, 0);
-            _refreshButton.Text = "刷新";
-            _refreshButton.Dock = DockStyle.Fill;
-            _refreshButton.Click += (_, _) => LoadProcesses();
-            filterRow.Controls.Add(_refreshButton, 2, 0);
-            root.Controls.Add(filterRow, 0, 0);
-
-            _processList.Dock = DockStyle.Fill;
-            _processList.View = View.Details;
-            _processList.CheckBoxes = true;
-            _processList.FullRowSelect = true;
-            _processList.GridLines = true;
-            _processList.HideSelection = false;
-            _processList.ShowGroups = true;
-            _processList.Groups.AddRange(new[] { _applicationGroup, _backgroundGroup });
-            _processList.Columns.Add("进程名", 150);
-            _processList.Columns.Add("PID", 70);
-            _processList.Columns.Add("窗口标题", 220);
-            _processList.Columns.Add("路径", 280);
-            _processList.ItemChecked += ProcessListItemChecked;
-            root.Controls.Add(_processList, 0, 1);
-
-            var buttons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.RightToLeft
-            };
-
-            _okButton.Text = "确定";
-            _okButton.Width = 82;
-            _okButton.Height = 30;
-            _okButton.Click += (_, _) => AcceptSelection();
-            AcceptButton = _okButton;
-            buttons.Controls.Add(_okButton);
-
-            var cancelButton = new Button
-            {
-                Text = "取消",
-                Width = 82,
-                Height = 30,
-                DialogResult = DialogResult.Cancel
-            };
-            CancelButton = cancelButton;
-            buttons.Controls.Add(cancelButton);
-            root.Controls.Add(buttons, 0, 2);
-        }
-
-        private void LoadProcesses()
-        {
-            CaptureVisibleSelection();
-            _processes.Clear();
-
-            foreach (var process in Process.GetProcesses())
-            {
-                using (process)
-                {
-                    try
-                    {
-                        if (process.Id == Environment.ProcessId)
-                        {
-                            continue;
-                        }
-
-                        var item = TryCreateProcessListItem(process);
-                        if (item is not null)
-                        {
-                            _processes.Add(item);
-                        }
-                    }
-                    catch
-                    {
-                        // Some protected or exiting processes cannot be queried.
-                    }
-                }
-            }
-
-            _processes.Sort(static (left, right) =>
-            {
-                if (left.IsApplication != right.IsApplication)
-                {
-                    return left.IsApplication ? -1 : 1;
-                }
-
-                var nameCompare = string.Compare(left.ProcessName, right.ProcessName, StringComparison.OrdinalIgnoreCase);
-                return nameCompare != 0 ? nameCompare : left.ProcessId.CompareTo(right.ProcessId);
-            });
-
-            ApplyFilter();
-        }
-
-        private void ApplyFilter()
-        {
-            var filter = _filterText.Text.Trim();
-            _updatingList = true;
-            _processList.BeginUpdate();
-            try
-            {
-                _processList.Items.Clear();
-                foreach (var process in _processes)
-                {
-                    if (!MatchesFilter(process, filter))
-                    {
-                        continue;
-                    }
-
-                    var listItem = new ListViewItem(process.ProcessName)
-                    {
-                        Checked = _checkedProcessNames.Contains(process.ProcessName),
-                        Group = process.IsApplication ? _applicationGroup : _backgroundGroup,
-                        Tag = process
-                    };
-                    listItem.SubItems.Add(process.ProcessId.ToString());
-                    listItem.SubItems.Add(process.WindowTitle);
-                    listItem.SubItems.Add(process.ExecutablePath);
-                    _processList.Items.Add(listItem);
-                }
-            }
-            finally
-            {
-                _processList.EndUpdate();
-                _updatingList = false;
-            }
-        }
-
-        private void ProcessListItemChecked(object? sender, ItemCheckedEventArgs eventArgs)
-        {
-            if (_updatingList || eventArgs.Item.Tag is not ProcessListItem process)
-            {
-                return;
-            }
-
-            if (eventArgs.Item.Checked)
-            {
-                _checkedProcessNames.Add(process.ProcessName);
-            }
-            else
-            {
-                _checkedProcessNames.Remove(process.ProcessName);
-            }
-        }
-
-        private void CaptureVisibleSelection()
-        {
-            foreach (ListViewItem item in _processList.Items)
-            {
-                if (item.Tag is not ProcessListItem process)
-                {
-                    continue;
-                }
-
-                if (item.Checked)
-                {
-                    _checkedProcessNames.Add(process.ProcessName);
-                }
-                else
-                {
-                    _checkedProcessNames.Remove(process.ProcessName);
-                }
-            }
-        }
-
-        private void AcceptSelection()
-        {
-            CaptureVisibleSelection();
-            if (_checkedProcessNames.Count == 0)
-            {
-                MessageBox.Show(this, "请选择至少一个进程。", "从进程中选择", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            SelectedProcessNames = _checkedProcessNames
-                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            DialogResult = DialogResult.OK;
-            Close();
-        }
-
-        private static bool MatchesFilter(ProcessListItem process, string filter)
-        {
-            if (string.IsNullOrWhiteSpace(filter))
-            {
-                return true;
-            }
-
-            return process.ProcessName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-                || process.ProcessId.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
-                || process.WindowTitle.Contains(filter, StringComparison.OrdinalIgnoreCase)
-                || process.ExecutablePath.Contains(filter, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static ProcessListItem? TryCreateProcessListItem(Process process)
-        {
-            try
-            {
-                var processName = NormalizeProcessName(process.ProcessName);
-                if (string.IsNullOrWhiteSpace(processName))
-                {
-                    return null;
-                }
-
-                var windowTitle = SafeReadWindowTitle(process);
-                return new ProcessListItem(
-                    processName,
-                    process.Id,
-                    windowTitle,
-                    SafeReadExecutablePath(process),
-                    !string.IsNullOrWhiteSpace(windowTitle) || SafeHasMainWindow(process));
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static string NormalizeProcessName(string processName)
-        {
-            var fileName = Path.GetFileName(processName.Trim());
-            if (string.IsNullOrWhiteSpace(fileName))
-            {
-                return "";
-            }
-
-            return fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                ? fileName
-                : $"{fileName}.exe";
-        }
-
-        private static string SafeReadWindowTitle(Process process)
-        {
-            try
-            {
-                return process.MainWindowTitle ?? "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static string SafeReadExecutablePath(Process process)
-        {
-            try
-            {
-                return process.MainModule?.FileName ?? "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static bool SafeHasMainWindow(Process process)
-        {
-            try
-            {
-                return process.MainWindowHandle != IntPtr.Zero;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private sealed record ProcessListItem(
-            string ProcessName,
-            int ProcessId,
-            string WindowTitle,
-            string ExecutablePath,
-            bool IsApplication);
-    }
-
     private sealed class TargetApplicationPreset
     {
         public TargetApplicationPreset(string name, string executablePath, string[] arguments)
@@ -2399,5 +1637,8 @@ internal sealed class AppProxyGuiForm : Form
     {
         [DllImport("user32.dll")]
         internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        internal static extern bool SetForegroundWindow(IntPtr hWnd);
     }
 }

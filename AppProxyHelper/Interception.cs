@@ -10,9 +10,7 @@ public static class TrafficInterceptionFactory
 {
     public static IInterceptionSession Create(LoadedConfig loadedConfig, AppLogger logger)
     {
-        return loadedConfig.Value.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase)
-            ? new WinDivertInterceptionSession(loadedConfig, logger)
-            : new EnvironmentInterceptionSession(loadedConfig.Value, logger);
+        return new EnvironmentInterceptionSession(loadedConfig.Value, logger);
     }
 }
 

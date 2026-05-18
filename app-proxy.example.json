@@ -1,9 +1,10 @@
 {
-  "mode": "Transparent",
-  "targetPath": "C:\\Path\\To\\App.exe",
-  "targetProcessNames": [],
+  "mode": "Environment",
+  "targetPath": "C:\\Path\\To\\Codex.exe",
   "targetArguments": [
-    "--example-arg"
+    "--disable-quic",
+    "--proxy-server=socks5://127.0.0.1:7890",
+    "--proxy-bypass-list=localhost;127.0.0.1;::1;<local>"
   ],
   "workingDirectory": null,
   "proxyUri": "socks5://127.0.0.1:7890",
@@ -23,34 +24,8 @@
     "tcpConnectTimeoutMs": 3000,
     "testProxyHandshake": true,
     "testProxyConnect": false,
+    "testProxyTlsHandshake": true,
     "connectTestHost": "example.com",
     "connectTestPort": 443
-  },
-  "transparent": {
-    "provider": "WinDivert",
-    "driverPath": "WinDivert.dll",
-    "redirectListenAddress": "0.0.0.0",
-    "redirectListenPort": 19080,
-    "winDivertPriority": 0,
-    "flowAssociationTimeoutMs": 0,
-    "proxyLookupTimeoutMs": 3000,
-    "proxyConnectTimeoutMs": 10000,
-    "listenBacklog": 512,
-    "packetBufferSize": 65535,
-    "queueLength": 4096,
-    "queueTimeMs": 2048,
-    "queueSizeBytes": 4194304,
-    "captureUdp": false,
-    "udpIdleTimeoutMs": 60000,
-    "trackChildProcesses": true,
-    "excludedChildProcessNames": [
-      "chrome.exe",
-      "msedge.exe",
-      "firefox.exe",
-      "brave.exe",
-      "opera.exe",
-      "vivaldi.exe",
-      "iexplore.exe"
-    ]
   }
 }

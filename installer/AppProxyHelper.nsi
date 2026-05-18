@@ -19,6 +19,7 @@ Unicode true
 !define PRODUCT_NAME "EasyProxy"
 !define COMPANY_NAME "EasyProxy"
 !define APP_EXE "EasyProxy.exe"
+!define APP_PROCESS "EasyProxy"
 !define UNINSTALL_EXE "uninstall.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\EasyProxy"
 
@@ -80,6 +81,28 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+Function RequireAppClosed
+  Push $0
+  Push $1
+
+  AppCloseRetry:
+  ClearErrors
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Process -Name ${APP_PROCESS} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"'
+  Pop $0
+  Pop $1
+  ${If} $0 == 1
+    IfSilent AppCloseSilent
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "EasyProxy is still running. Please close EasyProxy, then click Retry to continue installation. Click Cancel to exit setup." IDRETRY AppCloseRetry
+    Abort
+    AppCloseSilent:
+      DetailPrint "EasyProxy is still running. Close EasyProxy before continuing."
+      Abort
+  ${EndIf}
+
+  Pop $1
+  Pop $0
+FunctionEnd
+
 Function un.EnsureAdmin
   SetRegView 64
   ClearErrors
@@ -100,16 +123,39 @@ Function un.onInit
   Call un.EnsureAdmin
 FunctionEnd
 
+Function un.RequireAppClosed
+  Push $0
+  Push $1
+
+  un.AppCloseRetry:
+  ClearErrors
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Process -Name ${APP_PROCESS} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"'
+  Pop $0
+  Pop $1
+  ${If} $0 == 1
+    IfSilent un.AppCloseSilent
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "EasyProxy is still running. Please close EasyProxy, then click Retry to continue uninstalling. Click Cancel to exit uninstall." IDRETRY un.AppCloseRetry
+    Abort
+    un.AppCloseSilent:
+      DetailPrint "EasyProxy is still running. Close EasyProxy before continuing."
+      Abort
+  ${EndIf}
+
+  Pop $1
+  Pop $0
+FunctionEnd
+
 Section "" SecMain
   SectionIn RO
 
   SetShellVarContext all
   SetRegView 64
+  SetOverwrite on
+
+  Call RequireAppClosed
 
   SetOutPath "$INSTDIR"
   File "/oname=${APP_EXE}" "${PUBLISH_DIR}\${APP_EXE}"
-  File "/oname=WinDivert.dll" "${PUBLISH_DIR}\WinDivert.dll"
-  File "/oname=WinDivert64.sys" "${PUBLISH_DIR}\WinDivert64.sys"
   File "/oname=app-proxy.example.json" "${PUBLISH_DIR}\app-proxy.example.json"
 
   WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
@@ -135,14 +181,14 @@ Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
+  Call un.RequireAppClosed
+
   Delete "$DESKTOP\EasyProxy.lnk"
   Delete "$SMPROGRAMS\EasyProxy\EasyProxy.lnk"
   Delete "$SMPROGRAMS\EasyProxy\Uninstall EasyProxy.lnk"
   RMDir "$SMPROGRAMS\EasyProxy"
 
   Delete "$INSTDIR\app-proxy.example.json"
-  Delete "$INSTDIR\WinDivert64.sys"
-  Delete "$INSTDIR\WinDivert.dll"
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\${UNINSTALL_EXE}"
   RMDir "$INSTDIR"

@@ -38,10 +38,9 @@ public static class ConfigLoader
 
         var example = new AppProxyConfig
         {
-            Mode = "Transparent",
+            Mode = "Environment",
             TargetPath = @"C:\Path\To\App.exe",
-            TargetProcessNames = Array.Empty<string>(),
-            TargetArguments = new[] { "--example-arg" },
+            TargetArguments = BuildDefaultChromiumProxyArguments("socks5://127.0.0.1:7890"),
             WorkingDirectory = null,
             ProxyUri = "socks5://127.0.0.1:7890",
             LogDirectory = "logs",
@@ -49,6 +48,7 @@ public static class ConfigLoader
             {
                 TestProxyHandshake = true,
                 TestProxyConnect = false,
+                TestProxyTlsHandshake = true,
                 ConnectTestHost = "example.com",
                 ConnectTestPort = 443
             }
@@ -65,9 +65,10 @@ public static class ConfigLoader
 
     public static void Save(string configPath, AppProxyConfig config)
     {
+        var fullPath = Path.GetFullPath(configPath);
+        Normalize(config, Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory());
         Validate(config);
 
-        var fullPath = Path.GetFullPath(configPath);
         var directory = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -79,15 +80,9 @@ public static class ConfigLoader
 
     private static void Validate(AppProxyConfig config)
     {
-        if (string.IsNullOrWhiteSpace(config.Mode))
+        if (!config.Mode.Equals("Environment", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("mode 不能为空。");
-        }
-
-        if (!config.Mode.Equals("Environment", StringComparison.OrdinalIgnoreCase)
-            && !config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("mode 只支持 Environment 或 Transparent。");
+            throw new InvalidOperationException("mode 只支持 Environment；Transparent 已移除。");
         }
 
         if (string.IsNullOrWhiteSpace(config.ProxyUri))
@@ -100,115 +95,37 @@ public static class ConfigLoader
         {
             throw new InvalidOperationException("proxyUri 只支持 http、https、socks 或 socks5。");
         }
-
-        if (config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateTransparent(config.Transparent, uri);
-        }
     }
 
     private static void Normalize(AppProxyConfig config, string baseDirectory)
     {
-        config.TargetProcessNames = NormalizeProcessNames(
-            config.TargetProcessNames,
-            Array.Empty<string>());
+        config.Mode = "Environment";
+        config.TargetProcessNames = Array.Empty<string>();
 
-        config.Transparent.ExcludedChildProcessNames = NormalizeProcessNames(
-            config.Transparent.ExcludedChildProcessNames,
-            new TransparentInterceptionConfig().ExcludedChildProcessNames);
-
-        if (config.Transparent.FlowAssociationTimeoutMs == 750)
-        {
-            config.Transparent.FlowAssociationTimeoutMs = 0;
-        }
-
-        if (config.Transparent.DriverPath.Equals("drivers/WinDivert.dll", StringComparison.OrdinalIgnoreCase))
-        {
-            var configured = PathResolver.Resolve(config.Transparent.DriverPath, baseDirectory);
-            var rootDriver = Path.Combine(baseDirectory, "WinDivert.dll");
-            if (!File.Exists(configured) && File.Exists(rootDriver))
-            {
-                config.Transparent.DriverPath = "WinDivert.dll";
-            }
-        }
-
-        if (config.Transparent.RedirectListenAddress.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase))
-        {
-            config.Transparent.RedirectListenAddress = "0.0.0.0";
-        }
-
-        if (config.Mode.Equals("Transparent", StringComparison.OrdinalIgnoreCase)
-            && config.TargetArguments.Length == 0
-            && IsChromiumShellTarget(config.TargetPath))
-        {
-            config.TargetArguments = new[] { "--disable-quic" };
-        }
+        config.TargetArguments = EnsureChromiumProxyArguments(config.TargetArguments, config.ProxyUri);
     }
 
-    private static string[] NormalizeProcessNames(string[]? names, string[] fallback)
+    internal static string[] BuildDefaultChromiumProxyArguments(string proxyUri)
     {
-        var source = names is { Length: > 0 } ? names : fallback;
-        return source
-            .Where(static name => !string.IsNullOrWhiteSpace(name))
-            .Select(static name => Path.GetFileName(name.Trim()))
-            .Where(static name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        return new[]
+        {
+            "--disable-quic",
+            $"--proxy-server={proxyUri}",
+            "--proxy-bypass-list=localhost;127.0.0.1;::1;<local>"
+        };
+    }
+
+    private static string[] EnsureChromiumProxyArguments(string[]? arguments, string proxyUri)
+    {
+        var extras = (arguments ?? Array.Empty<string>())
+            .Where(static argument => !string.IsNullOrWhiteSpace(argument))
+            .Where(static argument => !argument.Equals("--disable-quic", StringComparison.OrdinalIgnoreCase))
+            .Where(static argument => !argument.StartsWith("--proxy-server=", StringComparison.OrdinalIgnoreCase))
+            .Where(static argument => !argument.StartsWith("--proxy-bypass-list=", StringComparison.OrdinalIgnoreCase))
             .ToArray();
-    }
 
-    private static bool IsChromiumShellTarget(string targetPath)
-    {
-        if (string.IsNullOrWhiteSpace(targetPath))
-        {
-            return false;
-        }
-
-        var fileName = Path.GetFileNameWithoutExtension(targetPath);
-        return fileName.Equals("Codex", StringComparison.OrdinalIgnoreCase)
-            || fileName.Equals("Cursor", StringComparison.OrdinalIgnoreCase)
-            || fileName.Equals("Antigravity", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static void ValidateTransparent(TransparentInterceptionConfig config, ProxyEndpoint proxy)
-    {
-        if (!config.Provider.Equals("WinDivert", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("transparent.provider 当前只支持 WinDivert。");
-        }
-
-        if (string.IsNullOrWhiteSpace(config.DriverPath))
-        {
-            throw new InvalidOperationException("transparent.driverPath 不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(config.RedirectListenAddress))
-        {
-            throw new InvalidOperationException("transparent.redirectListenAddress 不能为空。");
-        }
-
-        if (config.RedirectListenPort is < 1 or > 65535)
-        {
-            throw new InvalidOperationException("transparent.redirectListenPort 必须在 1-65535 范围内。");
-        }
-
-        if (config.PacketBufferSize is < 1500 or > 1024 * 1024)
-        {
-            throw new InvalidOperationException("transparent.packetBufferSize 必须在 1500 到 1048576 范围内。");
-        }
-
-        if (config.FlowAssociationTimeoutMs is < 0 or > 60000)
-        {
-            throw new InvalidOperationException("transparent.flowAssociationTimeoutMs 必须在 0 到 60000 范围内。");
-        }
-
-        if (config.CaptureUdp && !proxy.IsSocks)
-        {
-            throw new InvalidOperationException("transparent.captureUdp=true 时，proxyUri 必须使用 socks:// 或 socks5://。");
-        }
-
-        if (config.UdpIdleTimeoutMs is < 1000 or > 24 * 60 * 60 * 1000)
-        {
-            throw new InvalidOperationException("transparent.udpIdleTimeoutMs 必须在 1000 到 86400000 范围内。");
-        }
+        return BuildDefaultChromiumProxyArguments(proxyUri)
+            .Concat(extras)
+            .ToArray();
     }
 }

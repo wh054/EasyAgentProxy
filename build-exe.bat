@@ -67,31 +67,7 @@ if exist "%ROOT%app-proxy.example.json" (
     copy /y "%ROOT%app-proxy.example.json" "%DIST%\app-proxy.example.json" >nul
 )
 
-echo Preparing WinDivert...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\prepare-windivert.ps1" ^
-    -Root "%ROOT_ARG%" ^
-    -RuntimeIdentifier "%RID%" ^
-    -OutputDirectory "%DIST%"
-if errorlevel 1 goto fail
-
-if not exist "%DIST%\WinDivert.dll" (
-    echo ERROR: WinDivert.dll was not copied to the output root.
-    goto fail
-)
-
-if /i "%RID%"=="win-x64" (
-    if not exist "%DIST%\WinDivert64.sys" (
-        echo ERROR: WinDivert64.sys was not copied to the output root.
-        goto fail
-    )
-)
-
-if /i "%RID%"=="win-x86" (
-    if not exist "%DIST%\WinDivert32.sys" (
-        echo ERROR: WinDivert32.sys was not copied to the output root.
-        goto fail
-    )
-)
+del /q "%DIST%\WinDivert.dll" "%DIST%\WinDivert64.sys" "%DIST%\WinDivert32.sys" >nul 2>nul
 
 if not exist "%DIST%\%APP_NAME%.exe" (
     echo ERROR: publish finished but %APP_NAME%.exe was not found.

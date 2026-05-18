@@ -81,16 +81,6 @@ if not exist "%PUBLISH_DIR%\%APP_NAME%.exe" (
     goto fail
 )
 
-if not exist "%PUBLISH_DIR%\WinDivert.dll" (
-    echo ERROR: Missing %PUBLISH_DIR%\WinDivert.dll
-    goto fail
-)
-
-if not exist "%PUBLISH_DIR%\WinDivert64.sys" (
-    echo ERROR: Missing %PUBLISH_DIR%\WinDivert64.sys
-    goto fail
-)
-
 if not exist "%PUBLISH_DIR%\app-proxy.example.json" (
     echo ERROR: Missing %PUBLISH_DIR%\app-proxy.example.json
     goto fail

@@ -5,21 +5,27 @@ namespace AppProxyHelper;
 internal enum PacketRewriteKind
 {
     None,
-    Modified
+    Modified,
+    Drop
 }
 
 internal sealed class WinDivertPacketRewriter
 {
     private readonly TransparentConnectionTable _connections;
     private readonly TransparentUdpProxyServer? _udpProxy;
+    private readonly AppLogger _logger;
+    private readonly bool _blockQuicUdp443;
     private readonly IPAddress _redirectAddress;
     private readonly ushort _redirectPort;
+    private int _blockedUdp443Count;
 
     public WinDivertPacketRewriter(
         TransparentConnectionTable connections,
         IPAddress redirectAddress,
         int redirectPort,
-        TransparentUdpProxyServer? udpProxy)
+        TransparentUdpProxyServer? udpProxy,
+        bool blockQuicUdp443,
+        AppLogger logger)
     {
         if (redirectPort is < 1 or > 65535)
         {
@@ -28,6 +34,8 @@ internal sealed class WinDivertPacketRewriter
 
         _connections = connections;
         _udpProxy = udpProxy;
+        _blockQuicUdp443 = blockQuicUdp443;
+        _logger = logger;
         _redirectAddress = redirectAddress;
         _redirectPort = (ushort)redirectPort;
     }
@@ -131,11 +139,6 @@ internal sealed class WinDivertPacketRewriter
 
     private PacketRewriteKind RedirectUdpTargetRequest(IPv4UdpPacket packet, ref WinDivertAddress address)
     {
-        if (_udpProxy is null)
-        {
-            return PacketRewriteKind.None;
-        }
-
         if (ShouldBypassDestination(packet.DestinationAddress, packet.DestinationPort))
         {
             return PacketRewriteKind.None;
@@ -152,6 +155,17 @@ internal sealed class WinDivertPacketRewriter
                 packet.SourcePort,
                 packet.DestinationAddress,
                 packet.DestinationPort))
+        {
+            return PacketRewriteKind.None;
+        }
+
+        if (_blockQuicUdp443 && packet.DestinationPort == 443)
+        {
+            LogBlockedUdp443(packet);
+            return PacketRewriteKind.Drop;
+        }
+
+        if (_udpProxy is null)
         {
             return PacketRewriteKind.None;
         }
@@ -182,6 +196,17 @@ internal sealed class WinDivertPacketRewriter
         address.SetLoopback(false);
         address.SetImpostor(false);
         return PacketRewriteKind.Modified;
+    }
+
+    private void LogBlockedUdp443(IPv4UdpPacket packet)
+    {
+        var count = Interlocked.Increment(ref _blockedUdp443Count);
+        if (count <= 10 || count % 100 == 0)
+        {
+            _logger.Info(
+                $"已阻断目标 UDP/443 以强制回落 TCP: " +
+                $"{packet.SourceAddress}:{packet.SourcePort} -> {packet.DestinationAddress}:{packet.DestinationPort}, count={count}");
+        }
     }
 
     private PacketRewriteKind RestoreUdpProxyResponse(IPv4UdpPacket packet, ref WinDivertAddress address)

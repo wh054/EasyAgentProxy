@@ -1,9 +1,13 @@
+using System.Text.Json.Serialization;
+
 namespace AppProxyHelper;
 
 public sealed class AppProxyConfig
 {
-    public string Mode { get; set; } = "Transparent";
+    public string Mode { get; set; } = "Environment";
     public string TargetPath { get; set; } = "";
+
+    [JsonIgnore]
     public string[] TargetProcessNames { get; set; } = Array.Empty<string>();
     public string[] TargetArguments { get; set; } = Array.Empty<string>();
     public string? WorkingDirectory { get; set; }
@@ -17,6 +21,8 @@ public sealed class AppProxyConfig
     public bool AbortLaunchWhenDiagnosticsFail { get; set; }
     public string[] NoProxy { get; set; } = { "localhost", "127.0.0.1", "::1" };
     public DiagnosticsConfig Diagnostics { get; set; } = new();
+
+    [JsonIgnore]
     public TransparentInterceptionConfig Transparent { get; set; } = new();
 }
 
@@ -25,6 +31,7 @@ public sealed class DiagnosticsConfig
     public int TcpConnectTimeoutMs { get; set; } = 3000;
     public bool TestProxyHandshake { get; set; } = true;
     public bool TestProxyConnect { get; set; }
+    public bool TestProxyTlsHandshake { get; set; } = true;
     public string ConnectTestHost { get; set; } = "example.com";
     public int ConnectTestPort { get; set; } = 443;
 }
@@ -45,6 +52,8 @@ public sealed class TransparentInterceptionConfig
     public int QueueTimeMs { get; set; } = 2048;
     public int QueueSizeBytes { get; set; } = 4 * 1024 * 1024;
     public bool CaptureUdp { get; set; }
+    public bool BlockQuicUdp443 { get; set; } = true;
+    public bool EnableDomainSniffing { get; set; } = true;
     public int UdpIdleTimeoutMs { get; set; } = 60000;
     public bool TrackChildProcesses { get; set; } = true;
     public string[] ExcludedChildProcessNames { get; set; } =

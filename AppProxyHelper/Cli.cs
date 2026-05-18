@@ -17,7 +17,6 @@ public static class Cli
             {
                 "init" => InitializeConfig(args),
                 "check" => await CheckAsync(args),
-                "repair-env" => await RepairEnvironmentAsync(args),
                 "run" => await RunTargetAsync(args),
                 _ => UnknownCommand(command)
             };
@@ -58,18 +57,6 @@ public static class Cli
 
         var ok = await ProxyDiagnostics.CheckAsync(loadedConfig.Value, logger, CancellationToken.None);
         return ok ? 0 : 3;
-    }
-
-    private static Task<int> RepairEnvironmentAsync(string[] args)
-    {
-        var loadedConfig = LoadRequiredConfig(args);
-        using var logger = AppLogger.Create(loadedConfig);
-
-        logger.Info($"配置文件: {loadedConfig.ConfigPath}");
-        logger.Info($"日志文件: {logger.LogFilePath}");
-        logger.Info($"运行模式: {loadedConfig.Value.Mode}");
-
-        return WinDivertEnvironmentRepair.CheckAndRepairAsync(loadedConfig, logger, CancellationToken.None);
     }
 
     private static async Task<int> RunTargetAsync(string[] args)
@@ -156,23 +143,19 @@ public static class Cli
     {
         Console.WriteLine(
             """
-            EasyProxy - 按应用启动代理辅助工具
+            EasyProxy - Electron/Chromium 应用代理启动器
 
             用法:
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
-              EasyProxy repair-env --config app-proxy.json
               EasyProxy run --config app-proxy.json
-              EasyProxy ui [--config app-proxy.json] [--repair-env]
+              EasyProxy ui [--config app-proxy.json]
 
             说明:
-              Transparent 是默认模式。它使用 WinDivert 驱动按目标 PID 分类连接，并把 IPv4 TCP
-              透明转发到本机监听器，再通过 socks5/http CONNECT 上游代理转发；启用
-              captureUdp 后会通过 SOCKS5 UDP ASSOCIATE 转发 IPv4 UDP。
-              需要管理员权限，以及 WinDivert.dll + WinDivert64.sys/WinDivert32.sys。
-
-              Environment 模式会启动目标程序并注入 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 等环境变量。
-              这能覆盖尊重代理环境变量的应用和库，但不是内核级全流量拦截。
+              EasyProxy 会启动目标 Electron/Chromium 应用，并自动注入 --disable-quic、
+              --proxy-server、--proxy-bypass-list 以及 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+              等环境变量。它面向 Codex、Cursor、Antigravity 这类桌面 AI 应用，不再提供
+              Transparent/WinDivert 透明拦截入口。
             """);
     }
 }

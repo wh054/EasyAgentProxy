@@ -78,12 +78,14 @@ internal sealed record OriginalConnection(
 internal sealed class TransparentConnectionTable
 {
     private static readonly TimeSpan TargetProcessCacheTtl = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ClosedUdpTrackingGrace = TimeSpan.FromSeconds(2);
 
     private readonly ConcurrentDictionary<PortProtocolKey, OriginalConnection> _connections = new();
     private readonly ConcurrentDictionary<UdpOriginalKey, ushort> _udpRelayPorts = new();
     private readonly ConcurrentDictionary<UdpRelayKey, OriginalConnection> _udpRelayConnections = new();
     private readonly ConcurrentDictionary<ushort, byte> _udpRelayPortSet = new();
     private readonly Dictionary<TrackedConnectionKey, int> _trackedConnectionCounts = new();
+    private readonly Dictionary<TrackedConnectionKey, DateTimeOffset> _recentlyClosedUdpConnections = new();
     private readonly Dictionary<ClassificationEndpointKey, TrackedConnectionKey> _endpointToTrackedConnection = new();
     private readonly object _sync = new();
     private readonly AppLogger _logger;
@@ -144,9 +146,13 @@ internal sealed class TransparentConnectionTable
             : TrackedConnectionKey.Exact(protocol, localPort, reversedAddress, remotePort);
         lock (_sync)
         {
+            PruneRecentlyClosedUdpConnectionsLocked();
             return _trackedConnectionCounts.ContainsKey(exactKey)
                 || _trackedConnectionCounts.ContainsKey(reversedKey)
-                || _trackedConnectionCounts.ContainsKey(wildcardKey);
+                || _trackedConnectionCounts.ContainsKey(wildcardKey)
+                || _recentlyClosedUdpConnections.ContainsKey(exactKey)
+                || _recentlyClosedUdpConnections.ContainsKey(reversedKey)
+                || _recentlyClosedUdpConnections.ContainsKey(wildcardKey);
         }
     }
 
@@ -384,10 +390,39 @@ internal sealed class TransparentConnectionTable
         if (count <= 1)
         {
             _trackedConnectionCounts.Remove(key);
+            RememberRecentlyClosedUdpConnectionLocked(key);
             return;
         }
 
         _trackedConnectionCounts[key] = count - 1;
+    }
+
+    private void RememberRecentlyClosedUdpConnectionLocked(TrackedConnectionKey key)
+    {
+        if (key.Protocol != IpProtocols.Udp)
+        {
+            return;
+        }
+
+        PruneRecentlyClosedUdpConnectionsLocked();
+        _recentlyClosedUdpConnections[key] = DateTimeOffset.UtcNow.Add(ClosedUdpTrackingGrace);
+    }
+
+    private void PruneRecentlyClosedUdpConnectionsLocked()
+    {
+        if (_recentlyClosedUdpConnections.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var pair in _recentlyClosedUdpConnections.ToArray())
+        {
+            if (pair.Value <= now)
+            {
+                _recentlyClosedUdpConnections.Remove(pair.Key);
+            }
+        }
     }
 
     private static bool IsTrackableOpenEvent(byte protocol, WinDivertEvent eventType)
@@ -454,7 +489,7 @@ internal sealed class TransparentConnectionTable
         };
     }
 
-    private bool IsTargetProcess(uint processId)
+    public bool IsTargetProcess(uint processId)
     {
         if (_targetProcessId is { } targetProcessId && processId == (uint)targetProcessId)
         {

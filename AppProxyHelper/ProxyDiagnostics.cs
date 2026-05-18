@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Text;
 
 namespace AppProxyHelper;
@@ -32,7 +33,7 @@ public static class ProxyDiagnostics
             logger.Info("代理诊断完成: ok");
             return true;
         }
-        catch (Exception ex) when (ex is SocketException or IOException or TimeoutException or InvalidOperationException)
+        catch (Exception ex) when (ex is SocketException or IOException or TimeoutException or InvalidOperationException or AuthenticationException)
         {
             logger.Error("代理诊断失败。", ex);
             return false;
@@ -126,6 +127,7 @@ public static class ProxyDiagnostics
 
         await DrainSocksBindAddressAsync(stream, header[3], cancellationToken);
         logger.Info("SOCKS5 CONNECT 测试通过。");
+        await TestTlsHandshakeIfEnabledAsync(stream, config, logger, cancellationToken);
     }
 
     private static async Task TestHttpProxyAsync(
@@ -181,6 +183,31 @@ public static class ProxyDiagnostics
         }
 
         logger.Info($"HTTP CONNECT 测试通过: {statusLine}");
+        await TestTlsHandshakeIfEnabledAsync(stream, config, logger, cancellationToken);
+    }
+
+    private static async Task TestTlsHandshakeIfEnabledAsync(
+        Stream stream,
+        AppProxyConfig config,
+        AppLogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (!config.Diagnostics.TestProxyTlsHandshake)
+        {
+            return;
+        }
+
+        if (config.Diagnostics.ConnectTestPort != 443)
+        {
+            logger.Info("testProxyTlsHandshake=true，但 connectTestPort 不是 443，跳过 TLS 握手测试。");
+            return;
+        }
+
+        logger.Info($"测试 TLS 握手: {config.Diagnostics.ConnectTestHost}:{config.Diagnostics.ConnectTestPort}");
+        using var sslStream = new SslStream(stream, leaveInnerStreamOpen: true);
+        await sslStream.AuthenticateAsClientAsync(config.Diagnostics.ConnectTestHost)
+            .WaitAsync(TimeSpan.FromMilliseconds(config.Diagnostics.TcpConnectTimeoutMs), cancellationToken);
+        logger.Info($"TLS 握手测试通过: protocol={sslStream.SslProtocol}");
     }
 
     private static byte[] BuildSocks5ConnectRequest(string host, int port)
