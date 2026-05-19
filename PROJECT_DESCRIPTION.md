@@ -13,6 +13,7 @@ EasyProxy 当前定位为 Electron/Chromium 应用代理启动器，优先服务
 3. 自动生成并维护 Chromium 代理参数。
 4. 注入常见代理环境变量。
 5. 启动前做本地代理和 TLS 诊断。
+6. 可生成 Codex、Cursor、Antigravity 的独立代理启动脚本，日常使用不需要先打开 EasyProxy。
 
 ## 自动代理参数
 
@@ -46,6 +47,10 @@ EasyProxy 当前定位为 Electron/Chromium 应用代理启动器，优先服务
 - `AppProxyHelper/AppProxyConfig.cs`：配置模型。
 - `AppProxyHelper/ConfigLoader.cs`：配置加载、保存、验证和 Chromium 参数整理。
 - `AppProxyHelper/ProcessProxyLauncher.cs`：目标进程启动和环境变量注入。
+- `AppProxyHelper/ProxyEnvironmentProfile.cs`：统一生成 Chromium 参数、HTTP(S)/gRPC 代理环境变量和 no-proxy 变量。
+- `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity 的 VS Code 风格用户代理设置。
+- `AppProxyHelper/ProxyLauncherScriptGenerator.cs`：代理启动脚本生成。
+- `AppProxyHelper/TargetApplicationCatalog.cs`：Codex、Cursor、Antigravity 自动发现。
 - `AppProxyHelper/AppProxyGui.cs`：WinForms GUI。
 - `AppProxyHelper/Cli.cs`：命令行入口。
 - `app-proxy.example.json`：Electron-first 示例配置。

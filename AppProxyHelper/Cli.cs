@@ -18,6 +18,7 @@ public static class Cli
                 "init" => InitializeConfig(args),
                 "check" => await CheckAsync(args),
                 "run" => await RunTargetAsync(args),
+                "scripts" => CreateLauncherScripts(args),
                 _ => UnknownCommand(command)
             };
         }
@@ -98,6 +99,61 @@ public static class Cli
         return await launcher.RunAsync(cts.Token);
     }
 
+    private static int CreateLauncherScripts(string[] args)
+    {
+        var configPath = GetOptionValue(args, "--config");
+        AppProxyConfig? config = null;
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            config = ConfigLoader.Load(configPath).Value;
+        }
+
+        var proxyUri = GetOptionValue(args, "--proxy")
+            ?? config?.ProxyUri
+            ?? new AppProxyConfig().ProxyUri;
+        var outputDirectory = GetOptionValue(args, "--output")
+            ?? GetOptionValue(args, "--out");
+        var appId = GetOptionValue(args, "--app") ?? "all";
+        var scripts = new List<string>();
+
+        if (appId.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            scripts.AddRange(ProxyLauncherScriptGenerator.CreateScriptsForInstalledApps(proxyUri, outputDirectory));
+        }
+        else
+        {
+            var app = TargetApplicationCatalog.FindInstalledById(appId)
+                ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, codex, cursor, antigravity。");
+            scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri, outputDirectory));
+        }
+
+        var targetPath = GetOptionValue(args, "--target") ?? config?.TargetPath;
+        if (!string.IsNullOrWhiteSpace(targetPath) && File.Exists(targetPath))
+        {
+            var fullTargetPath = Path.GetFullPath(targetPath);
+            var alreadyCreated = scripts.Any(script => Path.GetFileNameWithoutExtension(script)
+                .StartsWith(TargetApplicationCatalog.GuessNameFromPath(fullTargetPath), StringComparison.OrdinalIgnoreCase));
+            if (!alreadyCreated)
+            {
+                var displayName = GetOptionValue(args, "--name") ?? TargetApplicationCatalog.GuessNameFromPath(fullTargetPath);
+                scripts.Add(ProxyLauncherScriptGenerator.CreateScript(fullTargetPath, displayName, proxyUri, outputDirectory));
+            }
+        }
+
+        if (scripts.Count == 0)
+        {
+            throw new CommandLineException("没有找到 Codex、Cursor 或 Antigravity。也可以用 --target 指定 exe。");
+        }
+
+        Console.WriteLine("已生成代理启动脚本:");
+        foreach (var script in scripts)
+        {
+            Console.WriteLine($"  {script}");
+        }
+
+        return 0;
+    }
+
     private static LoadedConfig LoadRequiredConfig(string[] args)
     {
         var configPath = GetOptionValue(args, "--config")
@@ -149,6 +205,7 @@ public static class Cli
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
               EasyProxy run --config app-proxy.json
+              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|antigravity] [--out DIR]
               EasyProxy ui [--config app-proxy.json]
 
             说明:

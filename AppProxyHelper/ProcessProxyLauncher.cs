@@ -60,9 +60,18 @@ public sealed class ProcessProxyLauncher
             startInfo.WorkingDirectory = Path.GetDirectoryName(targetPath) ?? _loadedConfig.BaseDirectory;
         }
 
+        ProxyEnvironmentProfile? profile = null;
         if (_config.InjectProxyEnvironment)
         {
-            InjectProxyEnvironment(startInfo);
+            profile = InjectProxyEnvironment(startInfo);
+        }
+
+        if (profile is not null && AntigravityCloudCodeRelay.IsAntigravityExecutable(targetPath))
+        {
+            await AntigravityCloudCodeRelay.EnsureStartedAsync(
+                profile.HttpProxyUri,
+                _logger,
+                cancellationToken);
         }
 
         using var process = new Process
@@ -113,30 +122,37 @@ public sealed class ProcessProxyLauncher
         return process.ExitCode;
     }
 
-    private void InjectProxyEnvironment(ProcessStartInfo startInfo)
+    private ProxyEnvironmentProfile InjectProxyEnvironment(ProcessStartInfo startInfo)
     {
-        var proxy = ProxyEndpoint.Parse(_config.ProxyUri);
-        var proxyValue = proxy.ToUriString();
-        var noProxy = string.Join(",", _config.NoProxy.Where(static item => !string.IsNullOrWhiteSpace(item)));
+        var profile = ProxyEnvironmentProfile.Create(_config.ProxyUri, _config.NoProxy);
+        var noProxy = profile.NoProxyValue;
 
-        SetEnvironment(startInfo, "HTTP_PROXY", proxyValue);
-        SetEnvironment(startInfo, "HTTPS_PROXY", proxyValue);
-        SetEnvironment(startInfo, "ALL_PROXY", proxyValue);
-        SetEnvironment(startInfo, "http_proxy", proxyValue);
-        SetEnvironment(startInfo, "https_proxy", proxyValue);
-        SetEnvironment(startInfo, "all_proxy", proxyValue);
-
-        if (!string.IsNullOrWhiteSpace(noProxy))
+        foreach (var variable in profile.GetEnvironmentVariables())
         {
-            SetEnvironment(startInfo, "NO_PROXY", noProxy);
-            SetEnvironment(startInfo, "no_proxy", noProxy);
+            SetEnvironment(startInfo, variable.Key, variable.Value);
         }
 
-        _logger.Info($"已注入代理环境变量: {UriFormatter.Sanitize(proxyValue)}");
-        if (!string.IsNullOrWhiteSpace(noProxy))
+        var antigravityRelayUrl = AntigravityCloudCodeRelay.IsAntigravityExecutable(startInfo.FileName)
+            ? AntigravityCloudCodeRelay.RelayUrl
+            : null;
+        foreach (var settingsPath in KnownEditorProxySettings.WriteForExecutable(
+            startInfo.FileName,
+            profile.HttpProxyUri,
+            antigravityRelayUrl))
+        {
+            _logger.Info($"已同步应用代理设置: {settingsPath}");
+        }
+
+        _logger.Info(
+            "已注入代理环境变量: " +
+            $"HTTP(S)_PROXY={UriFormatter.Sanitize(profile.HttpProxyUri)}, " +
+            $"ALL_PROXY={UriFormatter.Sanitize(profile.AllProxyUri)}");
+        if (!string.IsNullOrWhiteSpace(profile.NoProxyValue))
         {
             _logger.Info($"已注入 NO_PROXY: {noProxy}");
         }
+
+        return profile;
     }
 
     private void WarnIfLaunchingPackagedAppDirectly(string targetPath)

@@ -39,8 +39,25 @@ EasyProxy 是一个 Electron/Chromium 应用代理启动器，主要面向 Codex
 EasyProxy init --config app-proxy.json
 EasyProxy check --config app-proxy.json
 EasyProxy run --config app-proxy.json
+EasyProxy scripts --config app-proxy.json
 EasyProxy ui --config app-proxy.json
 ```
+
+`scripts` 会在桌面生成 Codex、Cursor、Antigravity 的代理启动脚本。也可以指定单个应用：
+
+```powershell
+EasyProxy scripts --app codex
+EasyProxy scripts --app cursor
+EasyProxy scripts --app antigravity
+```
+
+生成 Cursor 或 Antigravity 脚本时，EasyProxy 也会同步它们的 VS Code 风格用户设置：
+
+- `http.proxy`
+- `http.proxySupport`
+- `http.systemCertificates`
+
+脚本中的 Chromium 参数仍使用原始 `proxyUri`；`HTTP_PROXY`、`HTTPS_PROXY`、`grpc_proxy` 会优先使用本地 HTTP CONNECT 形式，以兼容后台 language server。
 
 ## 打包
 

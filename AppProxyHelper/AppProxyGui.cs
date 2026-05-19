@@ -554,11 +554,12 @@ internal sealed class AppProxyGuiForm : Form
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 5
+            ColumnCount = 6
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
@@ -575,15 +576,19 @@ internal sealed class AppProxyGuiForm : Form
         _stopButton.Click += (_, _) => _operationCts?.Cancel();
         panel.Controls.Add(_stopButton, 2, 0);
 
+        var createScriptsButton = MakeButton("生成脚本");
+        createScriptsButton.Click += (_, _) => CreateLauncherScripts();
+        panel.Controls.Add(createScriptsButton, 3, 0);
+
         var openLogButton = MakeButton("打开日志目录");
         openLogButton.Click += (_, _) => OpenLogDirectory();
-        panel.Controls.Add(openLogButton, 3, 0);
+        panel.Controls.Add(openLogButton, 4, 0);
 
         _statusLabel.Dock = DockStyle.Fill;
         _statusLabel.Margin = new Padding(8, 0, 0, 0);
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _statusLabel.ForeColor = SystemColors.GrayText;
-        panel.Controls.Add(_statusLabel, 4, 0);
+        panel.Controls.Add(_statusLabel, 5, 0);
 
         return panel;
     }
@@ -910,6 +915,61 @@ internal sealed class AppProxyGuiForm : Form
         Process.Start(new ProcessStartInfo(fullPath) { UseShellExecute = true });
     }
 
+    private void CreateLauncherScripts()
+    {
+        try
+        {
+            var proxyUri = string.IsNullOrWhiteSpace(_proxyUriText.Text)
+                ? new AppProxyConfig().ProxyUri
+                : _proxyUriText.Text.Trim();
+            var scripts = new List<string>();
+            var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var app in TargetApplicationCatalog.FindInstalled())
+            {
+                scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri));
+                seenTargets.Add(Path.GetFullPath(app.ExecutablePath));
+            }
+
+            var currentTarget = _targetPathText.Text.Trim();
+            if (!string.IsNullOrWhiteSpace(currentTarget) && File.Exists(currentTarget))
+            {
+                var fullCurrentTarget = Path.GetFullPath(currentTarget);
+                if (seenTargets.Add(fullCurrentTarget))
+                {
+                    scripts.Add(ProxyLauncherScriptGenerator.CreateScript(
+                        fullCurrentTarget,
+                        TargetApplicationCatalog.GuessNameFromPath(fullCurrentTarget),
+                        proxyUri));
+                }
+            }
+
+            if (scripts.Count == 0)
+            {
+                MessageBox.Show(
+                    this,
+                    "没有找到 Codex、Cursor 或 Antigravity，也没有可用的当前目标 exe。",
+                    "生成脚本",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            SetStatus($"已生成 {scripts.Count} 个代理启动脚本。");
+            MessageBox.Show(
+                this,
+                "已生成代理启动脚本:\r\n\r\n" + string.Join("\r\n", scripts),
+                "生成脚本",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "生成脚本失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            SetStatus("生成脚本失败。");
+        }
+    }
+
     private void BrowseFile(TextBox target, string filter)
     {
         using var dialog = new OpenFileDialog
@@ -1070,11 +1130,7 @@ internal sealed class AppProxyGuiForm : Form
 
     private static IReadOnlyList<TargetApplicationPreset> FindTargetApplicationPresets()
     {
-        var presets = new List<TargetApplicationPreset>();
-        AddTargetPreset(presets, "Codex 应用", GetCodexCandidates());
-        AddTargetPreset(presets, "Cursor 应用", GetCursorCandidates());
-        AddTargetPreset(presets, "Antigravity 应用", GetAntigravityCandidates());
-        return presets;
+        return TargetApplicationCatalog.FindInstalled();
     }
 
     private string[] BuildChromiumArgumentsForCurrentProxy()
@@ -1085,171 +1141,9 @@ internal sealed class AppProxyGuiForm : Form
         return ConfigLoader.BuildDefaultChromiumProxyArguments(proxyUri);
     }
 
-    private static void AddTargetPreset(
-        ICollection<TargetApplicationPreset> presets,
-        string name,
-        IEnumerable<string> candidates,
-        params string[] arguments)
-    {
-        var executablePath = FindFirstExistingFile(candidates);
-        if (executablePath is not null)
-        {
-            presets.Add(new TargetApplicationPreset(name, executablePath, arguments));
-        }
-    }
-
-    private static string? FindFirstExistingFile(IEnumerable<string> candidates)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                continue;
-            }
-
-            string fullPath;
-            try
-            {
-                fullPath = Path.GetFullPath(candidate);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (!seen.Add(fullPath))
-            {
-                continue;
-            }
-
-            try
-            {
-                if (File.Exists(fullPath))
-                {
-                    return fullPath;
-                }
-            }
-            catch
-            {
-                // Some packaged app directories can be permission-restricted.
-            }
-        }
-
-        return null;
-    }
-
     private static Icon LoadApplicationIcon()
     {
         return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
-    }
-
-    private static IEnumerable<string> GetCodexCandidates()
-    {
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrWhiteSpace(programFiles))
-        {
-            yield return Path.Combine(
-                programFiles,
-                @"WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\Codex.exe");
-
-            var windowsApps = Path.Combine(programFiles, "WindowsApps");
-            foreach (var packageDirectory in EnumerateDirectories(windowsApps, "OpenAI.Codex_*_x64__2p2nqsd0c76g0"))
-            {
-                yield return Path.Combine(packageDirectory, "app", "Codex.exe");
-            }
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Programs", "Codex", "Codex.exe");
-            yield return Path.Combine(localAppData, "Programs", "codex", "Codex.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetCursorCandidates()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Programs", "cursor", "Cursor.exe");
-            yield return Path.Combine(localAppData, "Programs", "Cursor", "Cursor.exe");
-        }
-
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Cursor", "Cursor.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetAntigravityCandidates()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-        {
-            yield return Path.Combine(localAppData, "Programs", "Antigravity", "Antigravity.exe");
-            yield return Path.Combine(localAppData, "Programs", "antigravity", "Antigravity.exe");
-        }
-
-        foreach (var programFiles in GetProgramFilesDirectories())
-        {
-            yield return Path.Combine(programFiles, "Antigravity", "Antigravity.exe");
-        }
-    }
-
-    private static IEnumerable<string> GetProgramFilesDirectories()
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var folder in new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
-        })
-        {
-            if (!string.IsNullOrWhiteSpace(folder) && seen.Add(folder))
-            {
-                yield return folder;
-            }
-        }
-    }
-
-    private static IEnumerable<string> EnumerateDirectories(string root, string pattern)
-    {
-        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
-        {
-            yield break;
-        }
-
-        List<string> directories;
-        try
-        {
-            directories = Directory
-                .EnumerateDirectories(root, pattern, SearchOption.TopDirectoryOnly)
-                .OrderByDescending(GetSafeLastWriteTimeUtc)
-                .ToList();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        foreach (var directory in directories)
-        {
-            yield return directory;
-        }
-    }
-
-    private static DateTime GetSafeLastWriteTimeUtc(string path)
-    {
-        try
-        {
-            return Directory.GetLastWriteTimeUtc(path);
-        }
-        catch
-        {
-            return DateTime.MinValue;
-        }
     }
 
     private static string? GetComparablePath(string path)
@@ -1610,27 +1504,6 @@ internal sealed class AppProxyGuiForm : Form
 
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && !root.StartsWith(@"\\", StringComparison.Ordinal);
-    }
-
-    private sealed class TargetApplicationPreset
-    {
-        public TargetApplicationPreset(string name, string executablePath, string[] arguments)
-        {
-            Name = name;
-            ExecutablePath = executablePath;
-            Arguments = arguments;
-        }
-
-        public string Name { get; }
-
-        public string ExecutablePath { get; }
-
-        public string[] Arguments { get; }
-
-        public override string ToString()
-        {
-            return Name;
-        }
     }
 
     private static class NativeMethods

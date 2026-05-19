@@ -43,8 +43,11 @@ public sealed class ProxyEndpoint
             || scheme.Equals("socks5", StringComparison.OrdinalIgnoreCase);
     }
 
-    public string ToUriString()
+    public string ToUriString(string? schemeOverride = null)
     {
+        var scheme = string.IsNullOrWhiteSpace(schemeOverride)
+            ? Scheme
+            : schemeOverride.ToLowerInvariant();
         var host = Host.Contains(":", StringComparison.Ordinal) && !Host.StartsWith("[", StringComparison.Ordinal)
             ? $"[{Host}]"
             : Host;
@@ -52,7 +55,7 @@ public sealed class ProxyEndpoint
             ? $"{host}:{Port}"
             : $"{UserInfo}@{host}:{Port}";
 
-        return $"{Scheme}://{authority}{PathAndQuery}";
+        return $"{scheme}://{authority}{PathAndQuery}";
     }
 
     private static int DefaultPort(string scheme)
