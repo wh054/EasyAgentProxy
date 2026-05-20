@@ -13,6 +13,7 @@ internal static class TargetApplicationCatalog
         AddTargetPreset(presets, "codex", "Codex 应用", GetCodexCandidates());
         AddTargetPreset(presets, "cursor", "Cursor 应用", GetCursorCandidates());
         AddTargetPreset(presets, "antigravity", "Antigravity 应用", GetAntigravityCandidates());
+        AddTargetPreset(presets, "antigravity-ide", "Antigravity IDE", GetAntigravityIdeCandidates());
         return presets;
     }
 
@@ -185,6 +186,21 @@ internal static class TargetApplicationCatalog
         foreach (var programFiles in GetProgramFilesDirectories())
         {
             yield return Path.Combine(programFiles, "Antigravity", "Antigravity.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetAntigravityIdeCandidates()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "Programs", "Antigravity IDE", "Antigravity IDE.exe");
+            yield return Path.Combine(localAppData, "Programs", "antigravity ide", "Antigravity IDE.exe");
+        }
+
+        foreach (var programFiles in GetProgramFilesDirectories())
+        {
+            yield return Path.Combine(programFiles, "Antigravity IDE", "Antigravity IDE.exe");
         }
     }
 

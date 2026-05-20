@@ -43,6 +43,10 @@ internal static class KnownEditorProxySettings
         {
             yield return Path.Combine(appData, "Antigravity", "User", "settings.json");
         }
+        else if (fileName.Equals("Antigravity IDE.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return Path.Combine(appData, "Antigravity IDE", "User", "settings.json");
+        }
         else if (fileName.Equals("Cursor.exe", StringComparison.OrdinalIgnoreCase))
         {
             yield return Path.Combine(appData, "Cursor", "User", "settings.json");

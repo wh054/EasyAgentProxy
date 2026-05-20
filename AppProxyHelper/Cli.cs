@@ -205,7 +205,7 @@ public static class Cli
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
               EasyProxy run --config app-proxy.json
-              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|antigravity] [--out DIR]
+              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|antigravity|antigravity-ide] [--out DIR]
               EasyProxy ui [--config app-proxy.json]
 
             说明:

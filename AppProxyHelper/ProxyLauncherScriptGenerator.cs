@@ -103,6 +103,11 @@ internal static class ProxyLauncherScriptGenerator
             return "AntigravityProxy.cmd";
         }
 
+        if (IsAntigravityIdeExecutable(executablePath, displayName))
+        {
+            return "AntigravityIDEProxy.cmd";
+        }
+
         if (IsCursorExecutable(executablePath, displayName))
         {
             return "CursorProxy.cmd";
@@ -264,6 +269,11 @@ internal static class ProxyLauncherScriptGenerator
             return "Antigravity-Proxy.lnk";
         }
 
+        if (IsAntigravityIdeExecutable(executablePath, displayName))
+        {
+            return "Antigravity IDE-Proxy.lnk";
+        }
+
         if (IsCursorExecutable(executablePath, displayName))
         {
             return "Cursor-Proxy.lnk";
@@ -283,6 +293,12 @@ internal static class ProxyLauncherScriptGenerator
     {
         return Path.GetFileNameWithoutExtension(executablePath).Equals("Cursor", StringComparison.OrdinalIgnoreCase)
             || displayName.Contains("Cursor", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAntigravityIdeExecutable(string executablePath, string displayName)
+    {
+        return Path.GetFileName(executablePath).Equals("Antigravity IDE.exe", StringComparison.OrdinalIgnoreCase)
+            || displayName.Contains("Antigravity IDE", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsCodexExecutable(string executablePath, string displayName)
