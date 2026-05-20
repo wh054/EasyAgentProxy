@@ -9,6 +9,7 @@ internal static class AntigravityCloudCodeRelay
 {
     public const int Port = 18990;
     public const string RelayUrl = "http://127.0.0.1:18990";
+    public const string HealthUrl = "http://127.0.0.1:18990/__easyproxy/health";
     public const string DefaultUpstream = "https://daily-cloudcode-pa.googleapis.com";
 
     public static bool IsAntigravityExecutable(string executablePath)
@@ -29,7 +30,7 @@ internal static class AntigravityCloudCodeRelay
 
     public static async Task EnsureStartedAsync(string httpProxyUri, AppLogger logger, CancellationToken cancellationToken)
     {
-        if (IsRelayListening())
+        if (await IsRelayHealthyAsync(cancellationToken))
         {
             logger.Info($"Antigravity CloudCode relay 已在监听: {RelayUrl}");
             return;
@@ -41,6 +42,11 @@ internal static class AntigravityCloudCodeRelay
             ? AppContext.BaseDirectory
             : Path.Combine(localAppData, "EasyProxy");
         var relayScriptPath = WriteRelayScript(relayDirectory);
+        if (IsRelayListening())
+        {
+            throw new InvalidOperationException(
+                $"Antigravity CloudCode relay port is already in use, but health check failed: {RelayUrl}");
+        }
 
         var startInfo = new ProcessStartInfo(nodePath)
         {
@@ -57,10 +63,46 @@ internal static class AntigravityCloudCodeRelay
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("无法启动 Antigravity CloudCode relay。");
 
-        await Task.Delay(800, cancellationToken);
-        if (!IsRelayListening())
+        if (!await WaitForRelayHealthyAsync(cancellationToken))
         {
             throw new InvalidOperationException($"Antigravity CloudCode relay 未能监听 {RelayUrl}。pid={process.Id}");
+        }
+    }
+
+    private static async Task<bool> WaitForRelayHealthyAsync(CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            await Task.Delay(250, cancellationToken);
+            if (await IsRelayHealthyAsync(cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> IsRelayHealthyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(3)
+            };
+            using var response = await client.GetAsync(HealthUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            return body.Contains("easyproxy-antigravity-relay", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -168,17 +210,207 @@ internal static class AntigravityCloudCodeRelay
     public const string ScriptContent = """
         const http = require("http");
         const https = require("https");
+        const crypto = require("crypto");
+        const fs = require("fs");
         const net = require("net");
+        const path = require("path");
         const tls = require("tls");
 
         const listenHost = process.env.RELAY_HOST || "127.0.0.1";
         const listenPort = Number(process.env.RELAY_PORT || "18990");
         const defaultUpstream = process.env.CLOUDCODE_UPSTREAM || "https://daily-cloudcode-pa.googleapis.com";
         const proxy = new URL(process.env.EASYPROXY_HTTP_PROXY || "http://127.0.0.1:7890");
+        const logPath = process.env.RELAY_LOG || path.join(__dirname, "Antigravity CloudCode Relay.log");
+        const onboardCache = new Map();
+        let nextRequestId = 1;
+
+        function log(message) {
+          fs.appendFile(logPath, `${new Date().toISOString()} ${message}\n`, () => {});
+        }
 
         function pickUpstream(clientUrl) {
           if (clientUrl.startsWith("/v1internal")) return new URL(defaultUpstream);
           return new URL("https://www.googleapis.com");
+        }
+
+        function pickFallbackUpstream(clientUrl, upstream) {
+          if (!clientUrl.startsWith("/v1internal:onboardUser")) return null;
+          const fallback = new URL("https://cloudcode-pa.googleapis.com");
+          return fallback.hostname === upstream.hostname ? null : fallback;
+        }
+
+        function buildUpstreamHeaders(clientHeaders, upstream) {
+          const headers = { ...clientHeaders, host: upstream.hostname };
+          for (const name of [
+            "connection",
+            "expect",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+          ]) {
+            delete headers[name];
+          }
+          return headers;
+        }
+
+        function getAuthScheme(headers) {
+          const value = String(headers.authorization || "");
+          const match = /^([A-Za-z]+)\s/.exec(value);
+          return match ? match[1] : "";
+        }
+
+        function getAuthKey(headers) {
+          return crypto.createHash("sha256").update(String(headers.authorization || "")).digest("hex");
+        }
+
+        function sanitizeClientUrl(clientUrl) {
+          const raw = clientUrl || "/";
+          const queryIndex = raw.indexOf("?");
+          if (queryIndex < 0) return raw;
+          return `${raw.slice(0, queryIndex)}?...`;
+        }
+
+        function writeRelayError(clientRes, message) {
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          }
+          if (!clientRes.writableEnded) {
+            clientRes.end(`CloudCode relay error: ${message}\n`);
+          }
+        }
+
+        function sanitizeResponseHeaders(headers, bodyLength) {
+          const sanitized = { ...headers, "content-length": String(bodyLength) };
+          for (const name of [
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+          ]) {
+            delete sanitized[name];
+          }
+          return sanitized;
+        }
+
+        function sendCachedOnboardResponse(clientReq, clientRes, cached, requestId, startedAt) {
+          clientReq.resume();
+          log(`[${requestId}] <- cached ${cached.statusCode} ${Date.now() - startedAt}ms`);
+          clientRes.writeHead(cached.statusCode, cached.headers);
+          clientRes.end(cached.body);
+        }
+
+        function proxyBufferedWithFallback(clientReq, clientRes, upstream, headers, requestId, startedAt, authKey) {
+          const chunks = [];
+          let size = 0;
+          let ended = false;
+          clientReq.on("data", (chunk) => {
+            size += chunk.length;
+            if (size > 2 * 1024 * 1024) {
+              clientReq.destroy(new Error("request body too large for retry buffer"));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          clientReq.on("end", () => {
+            const body = Buffer.concat(chunks);
+            const candidates = [upstream];
+            const fallback = pickFallbackUpstream(clientReq.url || "/", upstream);
+            if (fallback) candidates.push(fallback);
+            let attemptIndex = 0;
+
+            function attempt() {
+              const attemptUpstream = candidates[attemptIndex];
+              const attemptHeaders = { ...headers, host: attemptUpstream.hostname, "content-length": String(body.length) };
+              const upstreamReq = https.request({
+                protocol: "https:",
+                hostname: attemptUpstream.hostname,
+                port: 443,
+                method: clientReq.method,
+                path: clientReq.url,
+                headers: attemptHeaders,
+                createConnection: (_options, callback) => createProxiedTlsConnection(attemptUpstream, callback),
+              }, (upstreamRes) => {
+                if (ended) {
+                  upstreamRes.resume();
+                  return;
+                }
+                ended = true;
+                clearTimeout(fallbackTimer);
+                const statusCode = upstreamRes.statusCode || 502;
+                const responseChunks = [];
+                if (!clientRes.headersSent && !clientRes.destroyed) {
+                  clientRes.writeHead(statusCode, upstreamRes.headers);
+                }
+                upstreamRes.on("data", (chunk) => {
+                  responseChunks.push(chunk);
+                  if (!clientRes.destroyed && !clientRes.writableEnded) {
+                    clientRes.write(chunk);
+                  }
+                });
+                upstreamRes.on("end", () => {
+                  const responseBody = Buffer.concat(responseChunks);
+                  const responseHeaders = sanitizeResponseHeaders(upstreamRes.headers, responseBody.length);
+                  if (statusCode >= 200 && statusCode < 300) {
+                    onboardCache.set(authKey, { statusCode, headers: responseHeaders, body: responseBody });
+                  }
+                  log(`[${requestId}] <- ${statusCode} ${Date.now() - startedAt}ms upstream=${attemptUpstream.hostname}`);
+                  if (!clientRes.headersSent) {
+                    clientRes.writeHead(statusCode, responseHeaders);
+                  }
+                  if (!clientRes.destroyed && !clientRes.writableEnded) {
+                    clientRes.end();
+                  }
+                });
+              });
+              upstreamReq.setTimeout(25000, () => {
+                upstreamReq.destroy(new Error("upstream request timed out"));
+              });
+              const fallbackTimer = setTimeout(() => {
+                if (ended || attemptIndex + 1 >= candidates.length) return;
+                log(`[${requestId}] .. fallback after ${Date.now() - startedAt}ms upstream=${candidates[attemptIndex + 1].hostname}`);
+                attemptIndex++;
+                attempt();
+                upstreamReq.destroy(new Error("superseded by fallback"));
+              }, 4500);
+              upstreamReq.on("error", (error) => {
+                clearTimeout(fallbackTimer);
+                if (error.message === "superseded by fallback") return;
+                if (!ended && attemptIndex + 1 < candidates.length) {
+                  log(`[${requestId}] .. retry after error ${error.message}`);
+                  attemptIndex++;
+                  attempt();
+                  return;
+                }
+                if (!ended) {
+                  ended = true;
+                  log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
+                  writeRelayError(clientRes, error.message);
+                }
+              });
+              upstreamReq.end(body);
+            }
+
+            attempt();
+          });
+          clientReq.on("error", (error) => {
+            if (!ended) {
+              ended = true;
+              log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
+              writeRelayError(clientRes, error.message);
+            }
+          });
+          clientReq.on("aborted", () => {
+            log(`[${requestId}] xx client aborted ${Date.now() - startedAt}ms`);
+          });
         }
 
         function createProxiedTlsConnection(upstream, callback) {
@@ -206,9 +438,29 @@ internal static class AntigravityCloudCodeRelay
         }
 
         const server = http.createServer((clientReq, clientRes) => {
+          if ((clientReq.url || "") === "/__easyproxy/health") {
+            clientRes.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+            clientRes.end("easyproxy-antigravity-relay\n");
+            return;
+          }
+
           const upstream = pickUpstream(clientReq.url || "/");
-          const headers = { ...clientReq.headers, host: upstream.hostname };
-          delete headers["proxy-connection"];
+          const headers = buildUpstreamHeaders(clientReq.headers, upstream);
+          const requestId = nextRequestId++;
+          const startedAt = Date.now();
+          log(`[${requestId}] -> ${clientReq.method || "GET"} ${sanitizeClientUrl(clientReq.url)} upstream=${upstream.hostname} auth=${getAuthScheme(clientReq.headers)} len=${clientReq.headers["content-length"] || ""} expect=${clientReq.headers.expect ? "1" : "0"}`);
+          if ((clientReq.url || "").startsWith("/v1internal:onboardUser")) {
+            const authKey = getAuthKey(clientReq.headers);
+            const cached = onboardCache.get(authKey);
+            if (cached) {
+              sendCachedOnboardResponse(clientReq, clientRes, cached, requestId, startedAt);
+              return;
+            }
+
+            proxyBufferedWithFallback(clientReq, clientRes, upstream, headers, requestId, startedAt, authKey);
+            return;
+          }
+
           const upstreamReq = https.request({
             protocol: "https:",
             hostname: upstream.hostname,
@@ -218,16 +470,31 @@ internal static class AntigravityCloudCodeRelay
             headers,
             createConnection: (_options, callback) => createProxiedTlsConnection(upstream, callback),
           }, (upstreamRes) => {
+            log(`[${requestId}] <- ${upstreamRes.statusCode || 502} ${Date.now() - startedAt}ms`);
             clientRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
             upstreamRes.pipe(clientRes);
           });
+          upstreamReq.setTimeout(25000, () => {
+            upstreamReq.destroy(new Error("upstream request timed out"));
+          });
           upstreamReq.on("error", (error) => {
-            clientRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-            clientRes.end(`CloudCode relay error: ${error.message}\n`);
+            log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
+            writeRelayError(clientRes, error.message);
+          });
+          clientReq.on("aborted", () => {
+            log(`[${requestId}] xx client aborted ${Date.now() - startedAt}ms`);
+            upstreamReq.destroy(new Error("client aborted"));
+          });
+          clientRes.on("close", () => {
+            if (!clientRes.writableEnded) {
+              upstreamReq.destroy(new Error("client closed"));
+            }
           });
           clientReq.pipe(upstreamReq);
         });
 
-        server.listen(listenPort, listenHost);
+        server.listen(listenPort, listenHost, () => {
+          log(`listening http://${listenHost}:${listenPort} -> ${defaultUpstream} via ${proxy.href}`);
+        });
         """;
 }

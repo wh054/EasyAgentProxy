@@ -58,6 +58,8 @@ EasyProxy 会自动注入：
 - 生成 `Antigravity-Proxy` 快捷方式。
 - 在脚本目录生成并启动 `Antigravity CloudCode Relay.js`。
 - relay 默认监听 `http://127.0.0.1:18990`。
+- relay 会写入脱敏诊断日志 `Antigravity CloudCode Relay.log`，用于确认 CloudCode 请求是否到达上游。
+- relay 会清理 hop-by-hop 请求头，并对启动阶段容易超时的 `v1internal:onboardUser` 做一次备用 upstream 重试。
 - 如果没有 Node.js，启动脚本会尝试用 `winget` 安装 Node.js LTS。
 - 安装 language server shim：
   - 原始文件备份为 `language_server.easyproxy-pristine.exe`
@@ -77,6 +79,8 @@ Antigravity IDE 是旧版/IDE 版，结构更接近 VS Code。EasyProxy 不替�
   - `http.proxySupport`
   - `http.systemCertificates`
   - `codeiumDev.languageServerEnv`
+
+Antigravity 和 Antigravity IDE 可以同时运行。Antigravity 主应用使用本机 relay `127.0.0.1:18990`，Antigravity IDE 不占用这个端口；如果两者同时发起 CloudCode 请求，可能会增加同一个本地代理的连接压力，但这不是账号风控。
 
 ## 生成代理入口
 
@@ -127,6 +131,7 @@ EasyProxy ui --config app-proxy.json
 - 点原应用图标不会走代理；请点 `*-Proxy` 图标。
 - Antigravity 更新后对话失败，先重新生成 `Antigravity-Proxy`。
 - Antigravity relay 需要本机 `127.0.0.1:18990` 可监听。
+- 如果 Antigravity 首次打开出现 `Authentication Required` 或 `onboardUser: context deadline exceeded`，先看 `%LOCALAPPDATA%\Programs\Antigravity\EasyProxy\Antigravity CloudCode Relay.log`：请求返回 200 说明账号和 relay 都正常，多数是上游短时慢响应，重试或重开 `Antigravity-Proxy` 即可恢复。
 - 如果 Node.js 不存在，Antigravity 代理脚本会尝试通过 `winget` 安装；没有 `winget` 时需要手动安装 Node.js LTS。
 - Cursor 和 Antigravity IDE 如果仍不走代理，检查对应 `%APPDATA%\...\User\settings.json` 是否写入代理设置。
 

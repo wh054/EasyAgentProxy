@@ -167,8 +167,10 @@ internal static class ProxyLauncherScriptGenerator
         string httpProxyUri)
     {
         var escapedRelayPath = relayScriptPath.Replace("'", "''", StringComparison.Ordinal);
+        var escapedRelayFileName = Path.GetFileName(relayScriptPath).Replace("'", "''", StringComparison.Ordinal);
         var escapedWorkingDirectory = Path.GetDirectoryName(relayScriptPath)?.Replace("'", "''", StringComparison.Ordinal) ?? ".";
         var escapedProxyUri = httpProxyUri.Replace("'", "''", StringComparison.Ordinal);
+        var escapedHealthUrl = AntigravityCloudCodeRelay.HealthUrl.Replace("'", "''", StringComparison.Ordinal);
         var shimPath = AntigravityLanguageServerShim.GetCurrentExecutablePath();
         var realLanguageServerPath = AntigravityLanguageServerShim.GetRealLanguageServerPath(executablePath);
         var shimLines = string.IsNullOrWhiteSpace(shimPath)
@@ -178,6 +180,13 @@ internal static class ProxyLauncherScriptGenerator
         return "set \"EASYPROXY_HTTP_PROXY=" + EscapeSetValue(httpProxyUri) + "\"" + Environment.NewLine
             + shimLines
             + "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+            + "$relay = '"
+            + escapedRelayPath
+            + "'; $relayFull = [System.IO.Path]::GetFullPath($relay); $relayName = '"
+            + escapedRelayFileName
+            + "'; $healthUrl = '"
+            + escapedHealthUrl
+            + "'; "
             + "$node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source; "
             + "if (-not $node) { "
             + "Write-Host 'Node.js is required for the Antigravity CloudCode relay. Installing Node.js LTS with winget...'; "
@@ -189,13 +198,27 @@ internal static class ProxyLauncherScriptGenerator
             + "if (-not $node) { $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source }; "
             + "if (-not $node) { Write-Error 'Node.js installation finished, but node.exe was not found. Reopen this launcher after Windows refreshes PATH.'; exit 1 } "
             + "}; "
-            + "$existing = Get-NetTCPConnection -LocalPort 18990 -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $existing) { $env:EASYPROXY_HTTP_PROXY = '"
+            + "$healthy = $false; $existingHealthy = $false; "
+            + "$listener = Get-NetTCPConnection -LocalPort 18990 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            + "if ($listener) { "
+            + "$proc = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess) -ErrorAction SilentlyContinue; "
+            + "$cmd = if ($proc) { [string]$proc.CommandLine } else { '' }; "
+            + "$isRelay = $cmd -like ('*' + $relayName + '*'); "
+            + "$isCurrentRelay = $cmd -like ('*' + $relayFull + '*'); "
+            + "$procInfo = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue; "
+            + "$scriptInfo = Get-Item -LiteralPath $relayFull -ErrorAction SilentlyContinue; "
+            + "$isOld = $procInfo -and $scriptInfo -and $procInfo.StartTime -lt $scriptInfo.LastWriteTime; "
+            + "try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false }; "
+            + "if ($isRelay -and (-not $isCurrentRelay -or -not $healthy -or $isOld)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
+            + "elseif ($healthy) { $existingHealthy = $true } "
+            + "else { Write-Error ('Port 18990 is occupied by pid ' + $listener.OwningProcess + ': ' + $cmd); exit 1 } "
+            + "}; "
+            + "if (-not $existingHealthy) { $env:EASYPROXY_HTTP_PROXY = '"
             + escapedProxyUri
-            + "'; Start-Process -WindowStyle Hidden -FilePath $node -ArgumentList @('"
-            + escapedRelayPath
-            + "') -WorkingDirectory '"
+            + "'; Start-Process -WindowStyle Hidden -FilePath $node -WorkingDirectory '"
             + escapedWorkingDirectory
-            + "'; Start-Sleep -Milliseconds 800; $existing = Get-NetTCPConnection -LocalPort 18990 -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $existing) { Write-Error 'Antigravity CloudCode relay failed to listen on 127.0.0.1:18990.'; exit 1 } }\"" + Environment.NewLine
+            + "' -ArgumentList (([char]34) + $relayFull + ([char]34)); $healthy = $false; for ($i = 0; $i -lt 20 -and -not $healthy; $i++) { Start-Sleep -Milliseconds 250; try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false } }; "
+            + "if (-not $healthy) { Write-Error 'Antigravity CloudCode relay failed health check on 127.0.0.1:18990.'; exit 1 } }\"" + Environment.NewLine
             + "if errorlevel 1 (" + Environment.NewLine
             + "  echo Failed to prepare the Antigravity CloudCode relay." + Environment.NewLine
             + "  pause" + Environment.NewLine

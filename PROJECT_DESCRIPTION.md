@@ -54,6 +54,7 @@ Antigravity-Proxy.lnk
 ```
 
 shim 会把 CloudCode endpoint 改到本机 relay，relay 再通过用户代理访问 Google CloudCode/Google APIs。
+relay 会保留脱敏日志 `Antigravity CloudCode Relay.log`，用于排查请求是否到达上游、耗时和 HTTP 状态。启动阶段的 `v1internal:onboardUser` 偶尔会因为上游响应超过 Antigravity 的短超时而失败，relay 会对该接口做一次备用 upstream 重试。
 
 应用更新可能覆盖 shim。恢复方式是重新运行 EasyProxy 的脚本生成功能。
 
@@ -70,6 +71,8 @@ resources\app\extensions\antigravity\bin\language_server_windows_x64.exe
 - 生成 `Antigravity IDE-Proxy.lnk`
 - 注入 Chromium 参数和代理环境变量
 - 写入 `%APPDATA%\Antigravity IDE\User\settings.json`
+
+Antigravity IDE 不使用 Antigravity 主应用的 `127.0.0.1:18990` relay，也不替换 language server。它可以与 Antigravity 同时运行；两者的共同影响主要是共享同一个本地代理出口和同一个账号的 CloudCode 并发请求。
 
 ## 关键文件
 
@@ -93,5 +96,6 @@ Transparent 相关实现代码暂时留在仓库中作为历史实现，但不�
 - 生成代理图标时必须保留原图标，新增 `应用名-Proxy.lnk`。
 - 生成脚本默认进入应用目录的 `EasyProxy` 子目录。
 - Antigravity 新版的 shim 和 relay 是特化处理；不要套到 Antigravity IDE。
+- Antigravity 的 `onboardUser` 超时通常是 CloudCode 上游或本地代理短时慢响应，不等同于账号风控；优先查看 relay 脱敏日志和重新生成 `Antigravity-Proxy`。
 - 如果目标应用更新后代理失效，优先重新生成对应 `*-Proxy` 入口。
 - 如果新增应用支持，优先判断它是只需要 Environment/settings，还是需要像 Antigravity 一样做协议 relay 或进程 shim。
