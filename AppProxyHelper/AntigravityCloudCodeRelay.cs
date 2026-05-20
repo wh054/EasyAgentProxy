@@ -173,10 +173,15 @@ internal static class AntigravityCloudCodeRelay
 
         const listenHost = process.env.RELAY_HOST || "127.0.0.1";
         const listenPort = Number(process.env.RELAY_PORT || "18990");
-        const upstream = new URL(process.env.CLOUDCODE_UPSTREAM || "https://daily-cloudcode-pa.googleapis.com");
+        const defaultUpstream = process.env.CLOUDCODE_UPSTREAM || "https://daily-cloudcode-pa.googleapis.com";
         const proxy = new URL(process.env.EASYPROXY_HTTP_PROXY || "http://127.0.0.1:7890");
 
-        function createProxiedTlsConnection(options, callback) {
+        function pickUpstream(clientUrl) {
+          if (clientUrl.startsWith("/v1internal")) return new URL(defaultUpstream);
+          return new URL("https://www.googleapis.com");
+        }
+
+        function createProxiedTlsConnection(upstream, callback) {
           const socket = net.connect(Number(proxy.port || 80), proxy.hostname);
           const target = `${upstream.hostname}:443`;
           socket.once("connect", () => {
@@ -201,6 +206,7 @@ internal static class AntigravityCloudCodeRelay
         }
 
         const server = http.createServer((clientReq, clientRes) => {
+          const upstream = pickUpstream(clientReq.url || "/");
           const headers = { ...clientReq.headers, host: upstream.hostname };
           delete headers["proxy-connection"];
           const upstreamReq = https.request({
@@ -210,7 +216,7 @@ internal static class AntigravityCloudCodeRelay
             method: clientReq.method,
             path: clientReq.url,
             headers,
-            createConnection: createProxiedTlsConnection,
+            createConnection: (_options, callback) => createProxiedTlsConnection(upstream, callback),
           }, (upstreamRes) => {
             clientRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
             upstreamRes.pipe(clientRes);

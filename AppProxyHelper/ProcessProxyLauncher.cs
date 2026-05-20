@@ -68,6 +68,7 @@ public sealed class ProcessProxyLauncher
 
         if (profile is not null && AntigravityCloudCodeRelay.IsAntigravityExecutable(targetPath))
         {
+            InjectAntigravityLanguageServerShim(startInfo, targetPath);
             await AntigravityCloudCodeRelay.EnsureStartedAsync(
                 profile.HttpProxyUri,
                 _logger,
@@ -153,6 +154,23 @@ public sealed class ProcessProxyLauncher
         }
 
         return profile;
+    }
+
+    private void InjectAntigravityLanguageServerShim(ProcessStartInfo startInfo, string targetPath)
+    {
+        var shimPath = AntigravityLanguageServerShim.GetCurrentExecutablePath();
+        if (string.IsNullOrWhiteSpace(shimPath))
+        {
+            _logger.Warn("无法定位 EasyProxy.exe，Antigravity 2.0 language server shim 未启用。");
+            return;
+        }
+
+        foreach (var variable in AntigravityLanguageServerShim.GetEnvironmentVariables(targetPath, shimPath))
+        {
+            SetEnvironment(startInfo, variable.Key, variable.Value);
+        }
+
+        _logger.Info($"已启用 Antigravity 2.0 language server shim: {shimPath}");
     }
 
     private void WarnIfLaunchingPackagedAppDirectly(string targetPath)

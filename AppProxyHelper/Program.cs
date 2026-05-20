@@ -6,6 +6,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (AntigravityLanguageServerShim.ShouldRun(args))
+        {
+            return AntigravityLanguageServerShim.Run(args);
+        }
+
         if (args.Length == 0 || args[0].Equals("ui", StringComparison.OrdinalIgnoreCase))
         {
             AppProxyGui.Run(
