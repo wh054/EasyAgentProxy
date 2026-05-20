@@ -32,6 +32,8 @@ internal static class AntigravityLanguageServerShim
         var startInfo = new ProcessStartInfo(realLanguageServer)
         {
             UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true

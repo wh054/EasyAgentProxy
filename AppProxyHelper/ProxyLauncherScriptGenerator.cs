@@ -8,10 +8,10 @@ internal static class ProxyLauncherScriptGenerator
 {
     public static string GetDefaultOutputDirectory()
     {
-        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-        return string.IsNullOrWhiteSpace(desktop)
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return string.IsNullOrWhiteSpace(localAppData)
             ? Environment.CurrentDirectory
-            : desktop;
+            : Path.Combine(localAppData, "EasyProxy", "Launchers");
     }
 
     public static string CreateScript(
@@ -38,20 +38,22 @@ internal static class ProxyLauncherScriptGenerator
         }
 
         var directory = string.IsNullOrWhiteSpace(outputDirectory)
-            ? GetDefaultOutputDirectory()
+            ? GetDefaultOutputDirectory(fullExecutablePath, displayName)
             : Path.GetFullPath(outputDirectory);
         Directory.CreateDirectory(directory);
 
-        var safeName = MakeSafeFileName($"{displayName} Proxy.cmd");
+        var isAntigravity = AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath);
+        var safeName = GetLauncherScriptName(fullExecutablePath, displayName);
         var scriptPath = Path.Combine(directory, safeName);
-        var antigravityRelayUrl = AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath)
+        var hiddenLauncherPath = Path.ChangeExtension(scriptPath, ".vbs");
+        var antigravityRelayUrl = isAntigravity
             ? AntigravityCloudCodeRelay.RelayUrl
             : null;
         var relayScriptPath = antigravityRelayUrl is null
             ? null
             : AntigravityCloudCodeRelay.WriteRelayScript(directory);
         KnownEditorProxySettings.WriteForExecutable(fullExecutablePath, profile.HttpProxyUri, antigravityRelayUrl);
-        if (AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath))
+        if (isAntigravity)
         {
             var shimPath = AntigravityLanguageServerShim.GetCurrentExecutablePath();
             if (!string.IsNullOrWhiteSpace(shimPath))
@@ -64,12 +66,54 @@ internal static class ProxyLauncherScriptGenerator
             scriptPath,
             BuildScript(fullExecutablePath, profile, relayScriptPath),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        if (AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath))
-        {
-            PointAntigravityShortcutsToScript(scriptPath, fullExecutablePath);
-        }
+        File.WriteAllText(
+            hiddenLauncherPath,
+            BuildHiddenLauncherScript(scriptPath),
+            Encoding.ASCII);
+        PointShortcutsToScript(fullExecutablePath, displayName, hiddenLauncherPath);
 
         return scriptPath;
+    }
+
+    private static string GetDefaultOutputDirectory(string executablePath, string displayName)
+    {
+        if (IsCodexExecutable(executablePath, displayName)
+            && TryGetWindowsAppPackageLocalCache(executablePath, out var codexDirectory))
+        {
+            return Path.Combine(codexDirectory, "EasyProxy");
+        }
+
+        var executableDirectory = Path.GetDirectoryName(executablePath);
+        if (!string.IsNullOrWhiteSpace(executableDirectory)
+            && !IsWindowsAppsPath(executableDirectory))
+        {
+            return Path.Combine(executableDirectory, "EasyProxy");
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return string.IsNullOrWhiteSpace(localAppData)
+            ? Environment.CurrentDirectory
+            : Path.Combine(localAppData, "EasyProxy", MakeSafeFileName(displayName));
+    }
+
+    private static string GetLauncherScriptName(string executablePath, string displayName)
+    {
+        if (AntigravityCloudCodeRelay.IsAntigravityExecutable(executablePath))
+        {
+            return "AntigravityProxy.cmd";
+        }
+
+        if (IsCursorExecutable(executablePath, displayName))
+        {
+            return "CursorProxy.cmd";
+        }
+
+        if (IsCodexExecutable(executablePath, displayName))
+        {
+            return "CodexProxy.cmd";
+        }
+
+        return MakeSafeFileName($"{displayName}Proxy.cmd");
     }
 
     public static IReadOnlyList<string> CreateScriptsForInstalledApps(string proxyUri, string? outputDirectory = null)
@@ -169,6 +213,13 @@ internal static class ProxyLauncherScriptGenerator
         return value.Replace("%", "%%", StringComparison.Ordinal);
     }
 
+    private static string BuildHiddenLauncherScript(string scriptPath)
+    {
+        return "Set shell = CreateObject(\"WScript.Shell\")" + Environment.NewLine
+            + "scriptPath = Left(WScript.ScriptFullName, Len(WScript.ScriptFullName) - 4) & \".cmd\"" + Environment.NewLine
+            + "shell.Run Chr(34) & scriptPath & Chr(34), 0, False" + Environment.NewLine;
+    }
+
     private static string MakeSafeFileName(string value)
     {
         var invalid = Path.GetInvalidFileNameChars().ToHashSet();
@@ -181,14 +232,20 @@ internal static class ProxyLauncherScriptGenerator
         return builder.ToString();
     }
 
-    private static void PointAntigravityShortcutsToScript(string scriptPath, string executablePath)
+    private static void PointShortcutsToScript(string executablePath, string displayName, string scriptPath)
     {
+        var shortcutName = GetShortcutName(executablePath, displayName);
+        if (string.IsNullOrWhiteSpace(shortcutName))
+        {
+            return;
+        }
+
         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
         foreach (var shortcutPath in new[]
         {
-            string.IsNullOrWhiteSpace(desktop) ? null : Path.Combine(desktop, "Antigravity.lnk"),
-            string.IsNullOrWhiteSpace(programs) ? null : Path.Combine(programs, "Antigravity.lnk")
+            string.IsNullOrWhiteSpace(desktop) ? null : Path.Combine(desktop, shortcutName),
+            string.IsNullOrWhiteSpace(programs) ? null : Path.Combine(programs, shortcutName)
         })
         {
             if (string.IsNullOrWhiteSpace(shortcutPath))
@@ -198,6 +255,77 @@ internal static class ProxyLauncherScriptGenerator
 
             TryWriteShortcut(shortcutPath, scriptPath, Path.GetDirectoryName(scriptPath) ?? "", executablePath + ",0");
         }
+    }
+
+    private static string? GetShortcutName(string executablePath, string displayName)
+    {
+        if (AntigravityCloudCodeRelay.IsAntigravityExecutable(executablePath))
+        {
+            return "Antigravity-Proxy.lnk";
+        }
+
+        if (IsCursorExecutable(executablePath, displayName))
+        {
+            return "Cursor-Proxy.lnk";
+        }
+
+        if (IsCodexExecutable(executablePath, displayName))
+        {
+            return "Codex-Proxy.lnk";
+        }
+
+        return string.IsNullOrWhiteSpace(displayName)
+            ? null
+            : MakeSafeFileName(displayName + "-Proxy") + ".lnk";
+    }
+
+    private static bool IsCursorExecutable(string executablePath, string displayName)
+    {
+        return Path.GetFileNameWithoutExtension(executablePath).Equals("Cursor", StringComparison.OrdinalIgnoreCase)
+            || displayName.Contains("Cursor", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCodexExecutable(string executablePath, string displayName)
+    {
+        return Path.GetFileNameWithoutExtension(executablePath).Equals("Codex", StringComparison.OrdinalIgnoreCase)
+            || executablePath.Contains("OpenAI.Codex", StringComparison.OrdinalIgnoreCase)
+            || displayName.Contains("Codex", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsWindowsAppsPath(string path)
+    {
+        return path.Contains(
+            Path.Combine("Program Files", "WindowsApps"),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetWindowsAppPackageLocalCache(string executablePath, out string localCacheDirectory)
+    {
+        localCacheDirectory = "";
+        var directory = Path.GetDirectoryName(executablePath);
+        while (!string.IsNullOrWhiteSpace(directory))
+        {
+            var name = Path.GetFileName(directory);
+            var separatorIndex = name.IndexOf("__", StringComparison.Ordinal);
+            if (separatorIndex > 0)
+            {
+                var packageNameEnd = name.IndexOf('_', StringComparison.Ordinal);
+                if (packageNameEnd > 0)
+                {
+                    var packageFamily = name[..packageNameEnd] + "_" + name[(separatorIndex + 2)..];
+                    var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                    if (!string.IsNullOrWhiteSpace(localAppData))
+                    {
+                        localCacheDirectory = Path.Combine(localAppData, "Packages", packageFamily, "LocalCache");
+                        return true;
+                    }
+                }
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return false;
     }
 
     private static void TryWriteShortcut(
