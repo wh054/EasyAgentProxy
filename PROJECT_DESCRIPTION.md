@@ -11,9 +11,9 @@ EasyProxy 当前定位为 Electron/Chromium 桌面 AI 应用的代理启动器�
 1. 固定使用 `Environment` 方案。
 2. 由 EasyProxy 或生成的代理脚本启动目标应用。
 3. 注入 Chromium 代理参数和代理环境变量。
-4. 为已知编辑器同步 VS Code 风格用户设置。
-5. 生成独立 `*-Proxy` 快捷方式，不覆盖原应用图标。
-6. 脚本放进应用目录下的 `EasyProxy` 子目录，不堆在桌面。
+4. 为已知编辑器同步 VS Code 风格用户 settings。
+5. 生成独立 `应用名-Proxy.lnk`，不覆盖原应用图标。
+6. 脚本进入应用目录下的 `EasyProxy` 子目录，不堆在桌面。
 
 ## 应用处理策略
 
@@ -53,26 +53,46 @@ Antigravity-Proxy.lnk
   -> language_server.easyproxy-original.exe
 ```
 
-shim 会把 CloudCode endpoint 改到本机 relay，relay 再通过用户代理访问 Google CloudCode/Google APIs。
-relay 会保留脱敏日志 `Antigravity CloudCode Relay.log`，用于排查请求是否到达上游、耗时和 HTTP 状态。启动阶段的 `v1internal:onboardUser` 偶尔会因为上游响应超过 Antigravity 的短超时而失败，relay 会对该接口做一次备用 upstream 重试。
+shim 会把 CloudCode endpoint 改到本机 relay，relay 再通过用户代理访问 Google CloudCode/Google APIs。relay 保留脱敏日志 `Antigravity CloudCode Relay.log`，用于排查请求是否到达上游、耗时和 HTTP 状态。启动阶段的 `v1internal:onboardUser` 偶尔会因为上游响应超过 Antigravity 的短超时而失败，relay 会对该接口做备用 upstream 重试和短期缓存。
 
 应用更新可能覆盖 shim。恢复方式是重新运行 EasyProxy 的脚本生成功能。
 
 ### Antigravity IDE
 
-Antigravity IDE 是旧版/IDE 版，安装目录和运行结构更接近 VS Code。它的 language server 位于：
+Antigravity IDE 的 language server 位于：
 
 ```text
 resources\app\extensions\antigravity\bin\language_server_windows_x64.exe
 ```
 
-当前不替换该 language server，只做 Environment/settings 方案：
+实测该 server 对普通 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量不稳定：CloudCode endpoint 可以通过 settings 改到本机，但 OAuth userinfo/tokeninfo 等硬编码 Google APIs 仍可能直连并超时。当前策略是生成一个旁路 patched 副本，不覆盖原始 server：
 
-- 生成 `Antigravity IDE-Proxy.lnk`
-- 注入 Chromium 参数和代理环境变量
-- 写入 `%APPDATA%\Antigravity IDE\User\settings.json`
+```text
+language_server_windows_x64.exe
+language_server_windows_x64.easyproxy-pristine.exe
+language_server_windows_x64.easyproxy-patched.exe
+```
 
-Antigravity IDE 不使用 Antigravity 主应用的 `127.0.0.1:18990` relay，也不替换 language server。它可以与 Antigravity 同时运行；两者的共同影响主要是共享同一个本地代理出口和同一个账号的 CloudCode 并发请求。
+链路：
+
+```text
+Antigravity IDE-Proxy.lnk
+  -> AntigravityIDEProxy.vbs
+  -> AntigravityIDEProxy.cmd
+  -> Node CloudCode relay on 127.0.0.1:18990
+  -> Antigravity IDE.exe
+  -> language_server_windows_x64.easyproxy-patched.exe
+```
+
+settings 写入：
+
+- `jetski.cloudCodeUrl = http://127.0.0.1:18990`
+- `codeiumDev.languageServerBinaryPath`
+- `codeiumDev.machineLanguageServerBinaryPath`
+- `codeiumDev.languageServerEnv`
+- `http.proxy` 等基础代理项
+
+patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关硬编码请求导向本机 relay。Antigravity 与 Antigravity IDE 可同时运行，并复用同一个健康的 `127.0.0.1:18990` relay。
 
 ## 关键文件
 
@@ -83,19 +103,19 @@ Antigravity IDE 不使用 Antigravity 主应用的 `127.0.0.1:18990` relay，也
 - `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置。
 - `AppProxyHelper/ProxyLauncherScriptGenerator.cs`：生成应用目录脚本和 `*-Proxy` 快捷方式。
 - `AppProxyHelper/TargetApplicationCatalog.cs`：自动发现 Codex、Cursor、Antigravity、Antigravity IDE。
-- `AppProxyHelper/AntigravityCloudCodeRelay.cs`：Antigravity CloudCode 本机 relay。
-- `AppProxyHelper/AntigravityLanguageServerShim.cs`：Antigravity language server shim。
+- `AppProxyHelper/AntigravityCloudCodeRelay.cs`：Antigravity 系列 CloudCode 本机 relay。
+- `AppProxyHelper/AntigravityLanguageServerShim.cs`：Antigravity 主应用 shim 与 Antigravity IDE patched server 副本生成。
 - `AppProxyHelper/AppProxyGui.cs`：WinForms GUI。
 - `AppProxyHelper/Cli.cs`：命令行入口。
 - `app-proxy.example.json`：Environment-first 示例配置。
 
-Transparent 相关实现代码暂时留在仓库中作为历史实现，但不再由配置、GUI、CLI 或打包流程作为主入口使用。
+Transparent 相关实现暂时留在仓库中作为历史实现，但不再由配置、GUI、CLI 或打包流程作为主入口使用。
 
 ## 维护注意事项
 
-- 生成代理图标时必须保留原图标，新增 `应用名-Proxy.lnk`。
+- 生成代理图标时必须保留原图标，只新增 `应用名-Proxy.lnk`。
 - 生成脚本默认进入应用目录的 `EasyProxy` 子目录。
-- Antigravity 新版的 shim 和 relay 是特化处理；不要套到 Antigravity IDE。
-- Antigravity 的 `onboardUser` 超时通常是 CloudCode 上游或本地代理短时慢响应，不等同于账号风控；优先查看 relay 脱敏日志和重新生成 `Antigravity-Proxy`。
-- 如果目标应用更新后代理失效，优先重新生成对应 `*-Proxy` 入口。
-- 如果新增应用支持，优先判断它是只需要 Environment/settings，还是需要像 Antigravity 一样做协议 relay 或进程 shim。
+- Antigravity 主应用使用 shim；Antigravity IDE 使用 patched language server 副本，不要混用。
+- Antigravity 系列共用 `127.0.0.1:18990` relay；健康 relay 可复用，只有不健康或旧脚本才重启。
+- 应用更新后代理失效时，优先重新生成对应 `*-Proxy` 入口。
+- 如果新增应用支持，优先判断它只需要 Environment/settings，还是需要类似 Antigravity 的协议 relay 或进程 shim。

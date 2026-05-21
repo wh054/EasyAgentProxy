@@ -69,6 +69,10 @@ public sealed class ProcessProxyLauncher
         if (profile is not null && AntigravityCloudCodeRelay.IsAntigravityExecutable(targetPath))
         {
             InjectAntigravityLanguageServerShim(startInfo, targetPath);
+        }
+
+        if (profile is not null && AntigravityCloudCodeRelay.UsesCloudCodeRelay(targetPath))
+        {
             await AntigravityCloudCodeRelay.EnsureStartedAsync(
                 profile.HttpProxyUri,
                 _logger,
@@ -133,13 +137,17 @@ public sealed class ProcessProxyLauncher
             SetEnvironment(startInfo, variable.Key, variable.Value);
         }
 
-        var antigravityRelayUrl = AntigravityCloudCodeRelay.IsAntigravityExecutable(startInfo.FileName)
+        var antigravityRelayUrl = AntigravityCloudCodeRelay.UsesCloudCodeRelay(startInfo.FileName)
             ? AntigravityCloudCodeRelay.RelayUrl
+            : null;
+        var antigravityIdeLanguageServerPath = AntigravityCloudCodeRelay.IsAntigravityIdeExecutable(startInfo.FileName)
+            ? AntigravityLanguageServerShim.InstallForAntigravityIde(startInfo.FileName)
             : null;
         foreach (var settingsPath in KnownEditorProxySettings.WriteForExecutable(
             startInfo.FileName,
             profile.HttpProxyUri,
-            antigravityRelayUrl))
+            antigravityRelayUrl,
+            antigravityIdeLanguageServerPath))
         {
             _logger.Info($"已同步应用代理设置: {settingsPath}");
         }

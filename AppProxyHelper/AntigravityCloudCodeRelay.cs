@@ -17,6 +17,17 @@ internal static class AntigravityCloudCodeRelay
         return Path.GetFileName(executablePath).Equals("Antigravity.exe", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool IsAntigravityIdeExecutable(string executablePath)
+    {
+        return Path.GetFileName(executablePath).Equals("Antigravity IDE.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool UsesCloudCodeRelay(string executablePath)
+    {
+        return IsAntigravityExecutable(executablePath)
+            || IsAntigravityIdeExecutable(executablePath);
+    }
+
     public static string WriteRelayScript(string outputDirectory)
     {
         Directory.CreateDirectory(outputDirectory);

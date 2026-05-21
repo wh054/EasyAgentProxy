@@ -43,16 +43,24 @@ internal static class ProxyLauncherScriptGenerator
         Directory.CreateDirectory(directory);
 
         var isAntigravity = AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath);
+        var usesAntigravityRelay = AntigravityCloudCodeRelay.UsesCloudCodeRelay(fullExecutablePath);
         var safeName = GetLauncherScriptName(fullExecutablePath, displayName);
         var scriptPath = Path.Combine(directory, safeName);
         var hiddenLauncherPath = Path.ChangeExtension(scriptPath, ".vbs");
-        var antigravityRelayUrl = isAntigravity
+        var antigravityRelayUrl = usesAntigravityRelay
             ? AntigravityCloudCodeRelay.RelayUrl
             : null;
         var relayScriptPath = antigravityRelayUrl is null
             ? null
             : AntigravityCloudCodeRelay.WriteRelayScript(directory);
-        KnownEditorProxySettings.WriteForExecutable(fullExecutablePath, profile.HttpProxyUri, antigravityRelayUrl);
+        var antigravityIdeLanguageServerPath = AntigravityCloudCodeRelay.IsAntigravityIdeExecutable(fullExecutablePath)
+            ? AntigravityLanguageServerShim.InstallForAntigravityIde(fullExecutablePath)
+            : null;
+        KnownEditorProxySettings.WriteForExecutable(
+            fullExecutablePath,
+            profile.HttpProxyUri,
+            antigravityRelayUrl,
+            antigravityIdeLanguageServerPath);
         if (isAntigravity)
         {
             var shimPath = AntigravityLanguageServerShim.GetCurrentExecutablePath();
@@ -64,7 +72,7 @@ internal static class ProxyLauncherScriptGenerator
 
         File.WriteAllText(
             scriptPath,
-            BuildScript(fullExecutablePath, profile, relayScriptPath),
+            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.WriteAllText(
             hiddenLauncherPath,
@@ -135,7 +143,8 @@ internal static class ProxyLauncherScriptGenerator
     private static string BuildScript(
         string executablePath,
         ProxyEnvironmentProfile profile,
-        string? antigravityRelayScriptPath)
+        string? antigravityRelayScriptPath,
+        bool includeAntigravityLanguageServerShim)
     {
         var arguments = ConfigLoader.BuildDefaultChromiumProxyArguments(profile.ChromiumProxyUri)
             .Select(EscapeCommandArgument);
@@ -149,7 +158,8 @@ internal static class ProxyLauncherScriptGenerator
             : Environment.NewLine + BuildAntigravityRelayLaunchLine(
                 executablePath,
                 antigravityRelayScriptPath,
-                profile.HttpProxyUri);
+                profile.HttpProxyUri,
+                includeAntigravityLanguageServerShim);
 
         return $"""
             @echo off
@@ -164,16 +174,21 @@ internal static class ProxyLauncherScriptGenerator
     private static string BuildAntigravityRelayLaunchLine(
         string executablePath,
         string relayScriptPath,
-        string httpProxyUri)
+        string httpProxyUri,
+        bool includeAntigravityLanguageServerShim)
     {
         var escapedRelayPath = relayScriptPath.Replace("'", "''", StringComparison.Ordinal);
         var escapedRelayFileName = Path.GetFileName(relayScriptPath).Replace("'", "''", StringComparison.Ordinal);
         var escapedWorkingDirectory = Path.GetDirectoryName(relayScriptPath)?.Replace("'", "''", StringComparison.Ordinal) ?? ".";
         var escapedProxyUri = httpProxyUri.Replace("'", "''", StringComparison.Ordinal);
         var escapedHealthUrl = AntigravityCloudCodeRelay.HealthUrl.Replace("'", "''", StringComparison.Ordinal);
-        var shimPath = AntigravityLanguageServerShim.GetCurrentExecutablePath();
-        var realLanguageServerPath = AntigravityLanguageServerShim.GetRealLanguageServerPath(executablePath);
-        var shimLines = string.IsNullOrWhiteSpace(shimPath)
+        var shimPath = includeAntigravityLanguageServerShim
+            ? AntigravityLanguageServerShim.GetCurrentExecutablePath()
+            : null;
+        var realLanguageServerPath = includeAntigravityLanguageServerShim
+            ? AntigravityLanguageServerShim.GetRealLanguageServerPath(executablePath)
+            : null;
+        var shimLines = string.IsNullOrWhiteSpace(shimPath) || string.IsNullOrWhiteSpace(realLanguageServerPath)
             ? string.Empty
             : "set \"CODEIUM_LANGUAGE_SERVER_BIN=" + EscapeSetValue(shimPath) + "\"" + Environment.NewLine
                 + "set \"EASYPROXY_ANTIGRAVITY_REAL_LS=" + EscapeSetValue(realLanguageServerPath) + "\"" + Environment.NewLine;
@@ -204,12 +219,11 @@ internal static class ProxyLauncherScriptGenerator
             + "$proc = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess) -ErrorAction SilentlyContinue; "
             + "$cmd = if ($proc) { [string]$proc.CommandLine } else { '' }; "
             + "$isRelay = $cmd -like ('*' + $relayName + '*'); "
-            + "$isCurrentRelay = $cmd -like ('*' + $relayFull + '*'); "
             + "$procInfo = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue; "
             + "$scriptInfo = Get-Item -LiteralPath $relayFull -ErrorAction SilentlyContinue; "
             + "$isOld = $procInfo -and $scriptInfo -and $procInfo.StartTime -lt $scriptInfo.LastWriteTime; "
             + "try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false }; "
-            + "if ($isRelay -and (-not $isCurrentRelay -or -not $healthy -or $isOld)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
+            + "if ($isRelay -and (-not $healthy -or $isOld)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
             + "elseif ($healthy) { $existingHealthy = $true } "
             + "else { Write-Error ('Port 18990 is occupied by pid ' + $listener.OwningProcess + ': ' + $cmd); exit 1 } "
             + "}; "

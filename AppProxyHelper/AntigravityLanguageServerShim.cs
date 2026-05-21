@@ -8,19 +8,21 @@ internal static class AntigravityLanguageServerShim
     private const string RealLanguageServerEnv = "EASYPROXY_ANTIGRAVITY_REAL_LS";
     private const string OriginalLanguageServerName = "language_server.easyproxy-original.exe";
     private const string PristineLanguageServerName = "language_server.easyproxy-pristine.exe";
+    private const string IdeLanguageServerName = "language_server_windows_x64.exe";
+    private const string IdePristineLanguageServerName = "language_server_windows_x64.easyproxy-pristine.exe";
+    private const string IdePatchedLanguageServerName = "language_server_windows_x64.easyproxy-patched.exe";
 
     public static bool ShouldRun(string[] args)
     {
-        return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(RealLanguageServerEnv))
-            && args.Any(arg =>
-                arg.Equals("--standalone", StringComparison.OrdinalIgnoreCase)
-                || arg.Equals("--stamp", StringComparison.OrdinalIgnoreCase));
+        return IsLanguageServerInvocation(args)
+            && !string.IsNullOrWhiteSpace(ResolveRealLanguageServerPath());
     }
 
     public static int Run(string[] args)
     {
-        var realLanguageServer = Environment.GetEnvironmentVariable(RealLanguageServerEnv)
-            ?? throw new InvalidOperationException($"{RealLanguageServerEnv} is not set.");
+        var realLanguageServer = ResolveRealLanguageServerPath()
+            ?? throw new InvalidOperationException(
+                $"{RealLanguageServerEnv} is not set and no sibling Antigravity language server was found.");
         if (!File.Exists(realLanguageServer))
         {
             throw new FileNotFoundException("Antigravity real language server was not found.", realLanguageServer);
@@ -123,6 +125,28 @@ internal static class AntigravityLanguageServerShim
         File.Copy(shimExecutablePath, languageServerPath, overwrite: true);
     }
 
+    public static string InstallForAntigravityIde(string antigravityIdeExecutablePath)
+    {
+        var binDirectory = GetIdeBinDirectory(antigravityIdeExecutablePath);
+        var languageServerPath = Path.Combine(binDirectory, IdeLanguageServerName);
+        var pristineOriginalPath = Path.Combine(binDirectory, IdePristineLanguageServerName);
+        var patchedLanguageServerPath = Path.Combine(binDirectory, IdePatchedLanguageServerName);
+
+        if (!File.Exists(languageServerPath))
+        {
+            throw new FileNotFoundException("Antigravity IDE language server was not found.", languageServerPath);
+        }
+
+        if (!File.Exists(pristineOriginalPath))
+        {
+            File.Copy(languageServerPath, pristineOriginalPath, overwrite: false);
+        }
+
+        File.Copy(pristineOriginalPath, patchedLanguageServerPath, overwrite: true);
+        PatchCloudCodeUrls(patchedLanguageServerPath);
+        return patchedLanguageServerPath;
+    }
+
     public static IEnumerable<KeyValuePair<string, string>> GetEnvironmentVariables(
         string antigravityExecutablePath,
         string shimExecutablePath)
@@ -140,6 +164,13 @@ internal static class AntigravityLanguageServerShim
         return Path.Combine(appDirectory, "resources", "bin");
     }
 
+    private static string GetIdeBinDirectory(string antigravityIdeExecutablePath)
+    {
+        var appDirectory = Path.GetDirectoryName(Path.GetFullPath(antigravityIdeExecutablePath))
+            ?? throw new InvalidOperationException("Unable to resolve Antigravity IDE app directory.");
+        return Path.Combine(appDirectory, "resources", "app", "extensions", "antigravity", "bin");
+    }
+
     private static string[] RewriteArgs(string[] args)
     {
         var rewritten = args.ToArray();
@@ -155,6 +186,43 @@ internal static class AntigravityLanguageServerShim
         return rewritten;
     }
 
+    private static bool IsLanguageServerInvocation(string[] args)
+    {
+        return args.Any(arg =>
+            arg.Equals("--standalone", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("--stamp", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? ResolveRealLanguageServerPath()
+    {
+        var environmentValue = Environment.GetEnvironmentVariable(RealLanguageServerEnv);
+        if (!string.IsNullOrWhiteSpace(environmentValue) && File.Exists(environmentValue))
+        {
+            return environmentValue;
+        }
+
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath))
+        {
+            processPath = Environment.GetCommandLineArgs().FirstOrDefault();
+        }
+
+        if (string.IsNullOrWhiteSpace(processPath)
+            || !Path.GetFileName(processPath).Equals("language_server.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(processPath));
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        var sibling = Path.Combine(directory, OriginalLanguageServerName);
+        return File.Exists(sibling) ? sibling : null;
+    }
+
     private static void PatchCloudCodeUrls(string filePath)
     {
         var pairs = new[]
@@ -166,8 +234,14 @@ internal static class AntigravityLanguageServerShim
                 "https://cloudcode-pa.googleapis.com",
                 "http://xxxxxxxxxxxx@127.0.0.1:18990"),
             new UrlPatch(
-                "https://www.googleapis.com",
-                "http://xxx@127.0.0.1:18990")
+                "https://www.googleapis.com/oauth2",
+                "http://xxx@127.0.0.1:18990/oauth2"),
+            new UrlPatch(
+                "https://www.googleapis.com/drive",
+                "http://xxx@127.0.0.1:18990/drive"),
+            new UrlPatch(
+                "https://www.googleapis.com/upload",
+                "http://xxx@127.0.0.1:18990/upload")
         };
         var bytes = File.ReadAllBytes(filePath);
         var encoding = Encoding.ASCII;

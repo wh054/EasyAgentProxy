@@ -19,12 +19,17 @@ internal static class KnownEditorProxySettings
     public static IReadOnlyList<string> WriteForExecutable(
         string executablePath,
         string httpProxyUri,
-        string? antigravityCloudCodeUrl = null)
+        string? antigravityCloudCodeUrl = null,
+        string? antigravityIdeLanguageServerPath = null)
     {
         var settingsPaths = GetSettingsPaths(executablePath).ToArray();
         foreach (var settingsPath in settingsPaths)
         {
-            WriteVsCodeStyleSettings(settingsPath, httpProxyUri, antigravityCloudCodeUrl);
+            WriteVsCodeStyleSettings(
+                settingsPath,
+                httpProxyUri,
+                antigravityCloudCodeUrl,
+                antigravityIdeLanguageServerPath);
         }
 
         return settingsPaths;
@@ -56,7 +61,8 @@ internal static class KnownEditorProxySettings
     private static void WriteVsCodeStyleSettings(
         string settingsPath,
         string httpProxyUri,
-        string? antigravityCloudCodeUrl)
+        string? antigravityCloudCodeUrl,
+        string? antigravityIdeLanguageServerPath)
     {
         var directory = Path.GetDirectoryName(settingsPath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -75,13 +81,20 @@ internal static class KnownEditorProxySettings
             ["http_proxy"] = httpProxyUri,
             ["https_proxy"] = httpProxyUri,
             ["GRPC_PROXY"] = httpProxyUri,
-            ["grpc_proxy"] = httpProxyUri
+            ["grpc_proxy"] = httpProxyUri,
+            ["NO_PROXY"] = "localhost,127.0.0.1,::1",
+            ["no_proxy"] = "localhost,127.0.0.1,::1"
         };
 
-        if (settingsPath.Contains(Path.Combine("Antigravity", "User", "settings.json"), StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(antigravityCloudCodeUrl))
+        if (!string.IsNullOrWhiteSpace(antigravityCloudCodeUrl))
         {
             root["jetski.cloudCodeUrl"] = antigravityCloudCodeUrl;
+        }
+
+        if (!string.IsNullOrWhiteSpace(antigravityIdeLanguageServerPath))
+        {
+            root["codeiumDev.languageServerBinaryPath"] = antigravityIdeLanguageServerPath;
+            root["codeiumDev.machineLanguageServerBinaryPath"] = antigravityIdeLanguageServerPath;
         }
 
         File.WriteAllText(settingsPath, root.ToJsonString(JsonOptions));
