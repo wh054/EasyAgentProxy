@@ -234,9 +234,29 @@ internal static class AntigravityCloudCodeRelay
         const logPath = process.env.RELAY_LOG || path.join(__dirname, "Antigravity CloudCode Relay.log");
         const onboardCache = new Map();
         let nextRequestId = 1;
+        const DEFAULT_UPSTREAM_TIMEOUT_MS = readTimeoutMs("EASYPROXY_UPSTREAM_TIMEOUT_MS", 25000);
+        const STREAM_UPSTREAM_TIMEOUT_MS = readTimeoutMs("EASYPROXY_STREAM_TIMEOUT_MS", 0);
 
         function log(message) {
           fs.appendFile(logPath, `${new Date().toISOString()} ${message}\n`, () => {});
+        }
+
+        function readTimeoutMs(envName, fallback) {
+          const raw = process.env[envName];
+          if (raw === undefined || raw === "") return fallback;
+          const parsed = Number(raw);
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+        }
+
+        function isStreamingRequest(clientUrl) {
+          const raw = clientUrl || "";
+          return raw.includes(":streamGenerateContent") || raw.includes("alt=sse");
+        }
+
+        function getUpstreamTimeoutMs(clientUrl) {
+          return isStreamingRequest(clientUrl)
+            ? STREAM_UPSTREAM_TIMEOUT_MS
+            : DEFAULT_UPSTREAM_TIMEOUT_MS;
         }
 
         function pickUpstream(clientUrl) {
@@ -287,9 +307,14 @@ internal static class AntigravityCloudCodeRelay
         }
 
         function writeRelayError(clientRes, message) {
-          if (!clientRes.headersSent) {
-            clientRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          if (clientRes.headersSent) {
+            if (!clientRes.destroyed && !clientRes.writableEnded) {
+              clientRes.destroy(new Error(message));
+            }
+            return;
           }
+
+          clientRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
           if (!clientRes.writableEnded) {
             clientRes.end(`CloudCode relay error: ${message}\n`);
           }
@@ -485,9 +510,12 @@ internal static class AntigravityCloudCodeRelay
             clientRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
             upstreamRes.pipe(clientRes);
           });
-          upstreamReq.setTimeout(25000, () => {
-            upstreamReq.destroy(new Error("upstream request timed out"));
-          });
+          const upstreamTimeoutMs = getUpstreamTimeoutMs(clientReq.url || "/");
+          if (upstreamTimeoutMs > 0) {
+            upstreamReq.setTimeout(upstreamTimeoutMs, () => {
+              upstreamReq.destroy(new Error(`upstream request timed out after ${upstreamTimeoutMs}ms`));
+            });
+          }
           upstreamReq.on("error", (error) => {
             log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
             writeRelayError(clientRes, error.message);
