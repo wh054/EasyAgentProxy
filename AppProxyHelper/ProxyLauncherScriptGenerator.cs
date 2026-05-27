@@ -52,7 +52,7 @@ internal static class ProxyLauncherScriptGenerator
             : null;
         var relayScriptPath = antigravityRelayUrl is null
             ? null
-            : AntigravityCloudCodeRelay.WriteRelayScript(directory);
+            : AntigravityCloudCodeRelay.WriteSharedRelayScript();
         var antigravityIdeLanguageServerPath = AntigravityCloudCodeRelay.IsAntigravityIdeExecutable(fullExecutablePath)
             ? AntigravityLanguageServerShim.InstallForAntigravityIde(fullExecutablePath)
             : null;
@@ -70,9 +70,10 @@ internal static class ProxyLauncherScriptGenerator
             }
         }
 
+        var isCodex = IsCodexExecutable(fullExecutablePath, displayName);
         File.WriteAllText(
             scriptPath,
-            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity),
+            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity, isCodex),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.WriteAllText(
             hiddenLauncherPath,
@@ -144,7 +145,8 @@ internal static class ProxyLauncherScriptGenerator
         string executablePath,
         ProxyEnvironmentProfile profile,
         string? antigravityRelayScriptPath,
-        bool includeAntigravityLanguageServerShim)
+        bool includeAntigravityLanguageServerShim,
+        bool resolveCodexAtLaunch)
     {
         var arguments = ConfigLoader.BuildDefaultChromiumProxyArguments(profile.ChromiumProxyUri)
             .Select(EscapeCommandArgument);
@@ -160,15 +162,40 @@ internal static class ProxyLauncherScriptGenerator
                 antigravityRelayScriptPath,
                 profile.HttpProxyUri,
                 includeAntigravityLanguageServerShim);
+        var targetExecutable = EscapePath(executablePath);
+        if (resolveCodexAtLaunch)
+        {
+            preLaunchLines = BuildCodexDbHubLaunchLine() + BuildCodexAppxResolutionLines(executablePath) + preLaunchLines;
+            targetExecutable = "%EASYPROXY_TARGET_EXE%";
+        }
 
         return $"""
             @echo off
             setlocal
             {environmentLines}
             {preLaunchLines}
-            start "" "{EscapePath(executablePath)}" {joinedArguments}
+            start "" "{targetExecutable}" {joinedArguments}
             endlocal
             """;
+    }
+
+    private static string BuildCodexAppxResolutionLines(string fallbackExecutablePath)
+    {
+        var escapedFallback = EscapeSetValue(fallbackExecutablePath);
+        return "set \"EASYPROXY_TARGET_EXE=" + escapedFallback + "\"" + Environment.NewLine
+            + "for /f \"usebackq delims=\" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command \"$pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { Join-Path $pkg.InstallLocation 'app\\Codex.exe' }\"`) do set \"EASYPROXY_TARGET_EXE=%%I\"" + Environment.NewLine
+            + "if not exist \"%EASYPROXY_TARGET_EXE%\" (" + Environment.NewLine
+            + "  echo Codex.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
+            + "  pause" + Environment.NewLine
+            + "  exit /b 1" + Environment.NewLine
+            + ")" + Environment.NewLine;
+    }
+
+    private static string BuildCodexDbHubLaunchLine()
+    {
+        var scriptPath = @"D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat";
+        return "if exist \"" + EscapePath(scriptPath) + "\" call \"" + EscapePath(scriptPath) + "\" >nul 2>nul"
+            + Environment.NewLine;
     }
 
     private static string BuildAntigravityRelayLaunchLine(
@@ -219,11 +246,12 @@ internal static class ProxyLauncherScriptGenerator
             + "$proc = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess) -ErrorAction SilentlyContinue; "
             + "$cmd = if ($proc) { [string]$proc.CommandLine } else { '' }; "
             + "$isRelay = $cmd -like ('*' + $relayName + '*'); "
+            + "$usesCurrentRelay = $cmd -like ('*' + $relayFull + '*'); "
             + "$procInfo = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue; "
             + "$scriptInfo = Get-Item -LiteralPath $relayFull -ErrorAction SilentlyContinue; "
             + "$isOld = $procInfo -and $scriptInfo -and $procInfo.StartTime -lt $scriptInfo.LastWriteTime; "
             + "try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false }; "
-            + "if ($isRelay -and (-not $healthy -or $isOld)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
+            + "if ($isRelay -and (-not $healthy -or $isOld -or -not $usesCurrentRelay)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
             + "elseif ($healthy) { $existingHealthy = $true } "
             + "else { Write-Error ('Port 18990 is occupied by pid ' + $listener.OwningProcess + ': ' + $cmd); exit 1 } "
             + "}; "

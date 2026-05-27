@@ -33,6 +33,8 @@ EasyProxy 是面向桌面 AI 应用的代理启动器，当前默认方案是 `E
 - Cursor: `%LOCALAPPDATA%\Programs\cursor\EasyProxy`
 - Codex: `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\EasyProxy`
 
+生成 `CodexProxy.cmd` 时，如果检测到 `D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat`，会在启动 Codex 前静默调用它，用于确保本机 DBHub MCP 服务已经监听。
+
 ## 代理参数
 
 EasyProxy 会自动注入：
@@ -52,7 +54,7 @@ EasyProxy 会自动注入：
 新版 Antigravity 需要额外处理 CloudCode 请求。EasyProxy 会：
 
 - 生成 `Antigravity-Proxy` 快捷方式。
-- 在脚本目录生成并启动 `Antigravity CloudCode Relay.js`。
+- 在 `%LOCALAPPDATA%\EasyProxy\AntigravityRelay` 生成并启动 `Antigravity CloudCode Relay.js`，避免 Antigravity 更新时锁住安装目录。
 - relay 默认监听 `http://127.0.0.1:18990`。
 - relay 写入脱敏诊断日志 `Antigravity CloudCode Relay.log`。
 - relay 对启动阶段容易超时的 `v1internal:onboardUser` 做备用 upstream 重试和短期缓存。
@@ -92,7 +94,7 @@ settings 会写入：
 - `codeiumDev.languageServerBinaryPath`
 - `codeiumDev.machineLanguageServerBinaryPath`
 
-patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关硬编码请求导向本机 relay。Antigravity 与 Antigravity IDE 可以同时运行，并共用同一个健康的 `127.0.0.1:18990` relay。
+patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关硬编码请求导向本机 relay。Antigravity 与 Antigravity IDE 可以同时运行，并共用同一个健康的 `127.0.0.1:18990` relay。relay 脚本和日志位于 `%LOCALAPPDATA%\EasyProxy\AntigravityRelay`，不放在 Antigravity IDE 安装目录内。
 
 ## 生成代理入口
 

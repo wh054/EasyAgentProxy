@@ -39,6 +39,19 @@ internal static class AntigravityCloudCodeRelay
         return relayScriptPath;
     }
 
+    public static string GetRelayDirectory()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return string.IsNullOrWhiteSpace(localAppData)
+            ? Path.Combine(AppContext.BaseDirectory, "AntigravityRelay")
+            : Path.Combine(localAppData, "EasyProxy", "AntigravityRelay");
+    }
+
+    public static string WriteSharedRelayScript()
+    {
+        return WriteRelayScript(GetRelayDirectory());
+    }
+
     public static async Task EnsureStartedAsync(string httpProxyUri, AppLogger logger, CancellationToken cancellationToken)
     {
         if (await IsRelayHealthyAsync(cancellationToken))
@@ -48,11 +61,8 @@ internal static class AntigravityCloudCodeRelay
         }
 
         var nodePath = await EnsureNodeAsync(logger, cancellationToken);
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var relayDirectory = string.IsNullOrWhiteSpace(localAppData)
-            ? AppContext.BaseDirectory
-            : Path.Combine(localAppData, "EasyProxy");
-        var relayScriptPath = WriteRelayScript(relayDirectory);
+        var relayScriptPath = WriteSharedRelayScript();
+        var relayDirectory = Path.GetDirectoryName(relayScriptPath) ?? GetRelayDirectory();
         if (IsRelayListening())
         {
             throw new InvalidOperationException(

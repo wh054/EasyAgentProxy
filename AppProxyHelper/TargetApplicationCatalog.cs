@@ -102,15 +102,19 @@ internal static class TargetApplicationCatalog
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         if (!string.IsNullOrWhiteSpace(programFiles))
         {
-            var windowsApps = Path.Combine(programFiles, "WindowsApps");
-            foreach (var packageDirectory in EnumerateDirectories(windowsApps, "OpenAI.Codex_*_x64__2p2nqsd0c76g0"))
+            foreach (var packageDirectory in GetAppxPackageInstallLocations("OpenAI.Codex"))
             {
                 yield return Path.Combine(packageDirectory, "app", "Codex.exe");
             }
 
-            yield return Path.Combine(
-                programFiles,
-                @"WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\Codex.exe");
+            var windowsApps = Path.Combine(programFiles, "WindowsApps");
+            foreach (var packageDirectory in EnumerateWindowsAppPackageDirectories(
+                windowsApps,
+                "OpenAI.Codex",
+                "2p2nqsd0c76g0"))
+            {
+                yield return Path.Combine(packageDirectory, "app", "Codex.exe");
+            }
         }
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -244,6 +248,105 @@ internal static class TargetApplicationCatalog
         {
             yield return directory;
         }
+    }
+
+    private static IEnumerable<string> GetAppxPackageInstallLocations(string packageName)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            yield break;
+        }
+
+        string output;
+        try
+        {
+            using var process = new System.Diagnostics.Process();
+            process.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command "
+                    + "\"Get-AppxPackage -Name '"
+                    + packageName.Replace("'", "''", StringComparison.Ordinal)
+                    + "' | Sort-Object Version -Descending | Select-Object -ExpandProperty InstallLocation\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            if (!process.Start())
+            {
+                yield break;
+            }
+
+            if (!process.WaitForExit(3000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best effort only; discovery will continue with the WindowsApps fallback.
+                }
+
+                yield break;
+            }
+
+            output = process.StandardOutput.ReadToEnd();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var location = line.Trim();
+            if (!string.IsNullOrWhiteSpace(location))
+            {
+                yield return location;
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateWindowsAppPackageDirectories(
+        string root,
+        string packageName,
+        string publisherId)
+    {
+        var pattern = $"{packageName}_*__{publisherId}";
+        foreach (var directory in EnumerateDirectories(root, pattern)
+            .Select(directory => (
+                Directory: directory,
+                Version: TryGetWindowsAppPackageVersion(Path.GetFileName(directory), packageName, publisherId),
+                LastWriteTimeUtc: GetSafeLastWriteTimeUtc(directory)))
+            .OrderByDescending(item => item.Version ?? new Version(0, 0))
+            .ThenByDescending(item => item.LastWriteTimeUtc)
+            .Select(item => item.Directory))
+        {
+            yield return directory;
+        }
+    }
+
+    private static Version? TryGetWindowsAppPackageVersion(
+        string directoryName,
+        string packageName,
+        string publisherId)
+    {
+        var pattern = "^"
+            + System.Text.RegularExpressions.Regex.Escape(packageName)
+            + "_(?<version>[0-9]+(?:\\.[0-9]+){1,3})_[^_]+__"
+            + System.Text.RegularExpressions.Regex.Escape(publisherId)
+            + "$";
+        var match = System.Text.RegularExpressions.Regex.Match(
+            directoryName,
+            pattern,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        return match.Success && Version.TryParse(match.Groups["version"].Value, out var version)
+            ? version
+            : null;
     }
 
     private static DateTime GetSafeLastWriteTimeUtc(string path)

@@ -25,6 +25,20 @@ Codex 使用 Chromium 参数和环境变量。由于 Microsoft Store/WindowsApps
 %LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\EasyProxy
 ```
 
+Codex 的 Microsoft Store 包目录会在每次更新后带上新的版本号，例如：
+
+```text
+C:\Program Files\WindowsApps\OpenAI.Codex_26.519.2736.0_x64__2p2nqsd0c76g0
+```
+
+因此自动发现不能硬编码完整版本路径。当前策略是优先通过 `Get-AppxPackage -Name OpenAI.Codex` 读取 `InstallLocation`，因为普通权限下直接枚举 `C:\Program Files\WindowsApps` 可能失败。若 AppX 查询不可用，再回退到枚举：
+
+```text
+C:\Program Files\WindowsApps\OpenAI.Codex_*__2p2nqsd0c76g0
+```
+
+回退枚举会用正则从目录名提取版本号，按版本号倒序选择最新包，并拼接 `app\Codex.exe`。这样 Codex 更新后重新生成 `Codex-Proxy` 时，EasyProxy 会优先找到最新安装目录。
+
 生成入口为 `Codex-Proxy.lnk`。
 
 ### Cursor
@@ -47,13 +61,13 @@ Cursor 使用 Chromium 参数、环境变量和用户 settings 注入。脚本�
 Antigravity-Proxy.lnk
   -> AntigravityProxy.vbs
   -> AntigravityProxy.cmd
-  -> Node CloudCode relay on 127.0.0.1:18990
+  -> Node CloudCode relay on 127.0.0.1:18990 from %LOCALAPPDATA%\EasyProxy\AntigravityRelay
   -> Antigravity.exe
   -> EasyProxy language_server.exe shim
   -> language_server.easyproxy-original.exe
 ```
 
-shim 会把 CloudCode endpoint 改到本机 relay，relay 再通过用户代理访问 Google CloudCode/Google APIs。relay 保留脱敏日志 `Antigravity CloudCode Relay.log`，用于排查请求是否到达上游、耗时和 HTTP 状态。启动阶段的 `v1internal:onboardUser` 偶尔会因为上游响应超过 Antigravity 的短超时而失败，relay 会对该接口做备用 upstream 重试和短期缓存。
+shim 会把 CloudCode endpoint 改到本机 relay，relay 再通过用户代理访问 Google CloudCode/Google APIs。relay 保留脱敏日志 `Antigravity CloudCode Relay.log`，用于排查请求是否到达上游、耗时和 HTTP 状态。relay 脚本和日志位于 `%LOCALAPPDATA%\EasyProxy\AntigravityRelay`，避免 Antigravity 更新时锁住安装目录。启动阶段的 `v1internal:onboardUser` 偶尔会因为上游响应超过 Antigravity 的短超时而失败，relay 会对该接口做备用 upstream 重试和短期缓存。
 
 应用更新可能覆盖 shim。恢复方式是重新运行 EasyProxy 的脚本生成功能。
 
@@ -79,7 +93,7 @@ language_server_windows_x64.easyproxy-patched.exe
 Antigravity IDE-Proxy.lnk
   -> AntigravityIDEProxy.vbs
   -> AntigravityIDEProxy.cmd
-  -> Node CloudCode relay on 127.0.0.1:18990
+  -> Node CloudCode relay on 127.0.0.1:18990 from %LOCALAPPDATA%\EasyProxy\AntigravityRelay
   -> Antigravity IDE.exe
   -> language_server_windows_x64.easyproxy-patched.exe
 ```
@@ -115,6 +129,7 @@ Transparent 相关实现暂时留在仓库中作为历史实现，但不再由�
 
 - 生成代理图标时必须保留原图标，只新增 `应用名-Proxy.lnk`。
 - 生成脚本默认进入应用目录的 `EasyProxy` 子目录。
+- Codex 的 WindowsApps 安装目录包含滚动版本号；不要新增硬编码版本路径，优先维护 `TargetApplicationCatalog` 中的 AppX 查询、包名前缀、publisher id 和版本排序逻辑。
 - Antigravity 主应用使用 shim；Antigravity IDE 使用 patched language server 副本，不要混用。
 - Antigravity 系列共用 `127.0.0.1:18990` relay；健康 relay 可复用，只有不健康或旧脚本才重启。
 - 应用更新后代理失效时，优先重新生成对应 `*-Proxy` 入口。
