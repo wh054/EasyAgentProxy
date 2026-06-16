@@ -71,9 +71,10 @@ internal static class ProxyLauncherScriptGenerator
         }
 
         var isCodex = IsCodexExecutable(fullExecutablePath, displayName);
+        var isClaude = IsClaudeExecutable(fullExecutablePath, displayName);
         File.WriteAllText(
             scriptPath,
-            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity, isCodex),
+            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity, isCodex, isClaude),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.WriteAllText(
             hiddenLauncherPath,
@@ -86,10 +87,10 @@ internal static class ProxyLauncherScriptGenerator
 
     private static string GetDefaultOutputDirectory(string executablePath, string displayName)
     {
-        if (IsCodexExecutable(executablePath, displayName)
-            && TryGetWindowsAppPackageLocalCache(executablePath, out var codexDirectory))
+        if ((IsCodexExecutable(executablePath, displayName) || IsClaudeExecutable(executablePath, displayName))
+            && TryGetWindowsAppPackageLocalCache(executablePath, out var appDirectory))
         {
-            return Path.Combine(codexDirectory, "EasyProxy");
+            return Path.Combine(appDirectory, "EasyProxy");
         }
 
         var executableDirectory = Path.GetDirectoryName(executablePath);
@@ -127,6 +128,11 @@ internal static class ProxyLauncherScriptGenerator
             return "CodexProxy.cmd";
         }
 
+        if (IsClaudeExecutable(executablePath, displayName))
+        {
+            return "ClaudeProxy.cmd";
+        }
+
         return MakeSafeFileName($"{displayName}Proxy.cmd");
     }
 
@@ -146,7 +152,8 @@ internal static class ProxyLauncherScriptGenerator
         ProxyEnvironmentProfile profile,
         string? antigravityRelayScriptPath,
         bool includeAntigravityLanguageServerShim,
-        bool resolveCodexAtLaunch)
+        bool resolveCodexAtLaunch,
+        bool resolveClaudeAtLaunch)
     {
         var arguments = ConfigLoader.BuildDefaultChromiumProxyArguments(profile.ChromiumProxyUri)
             .Select(EscapeCommandArgument);
@@ -168,6 +175,11 @@ internal static class ProxyLauncherScriptGenerator
             preLaunchLines = BuildCodexDbHubLaunchLine() + BuildCodexAppxResolutionLines(executablePath) + preLaunchLines;
             targetExecutable = "%EASYPROXY_TARGET_EXE%";
         }
+        else if (resolveClaudeAtLaunch)
+        {
+            preLaunchLines = BuildClaudeAppxResolutionLines(executablePath) + preLaunchLines;
+            targetExecutable = "%EASYPROXY_TARGET_EXE%";
+        }
 
         return $"""
             @echo off
@@ -177,6 +189,18 @@ internal static class ProxyLauncherScriptGenerator
             start "" "{targetExecutable}" {joinedArguments}
             endlocal
             """;
+    }
+
+    private static string BuildClaudeAppxResolutionLines(string fallbackExecutablePath)
+    {
+        var escapedFallback = EscapeSetValue(fallbackExecutablePath);
+        return "set \"EASYPROXY_TARGET_EXE=" + escapedFallback + "\"" + Environment.NewLine
+            + "for /f \"usebackq delims=\" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command \"$pkg = Get-AppxPackage -Name 'Claude' | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { Join-Path $pkg.InstallLocation 'app\\claude.exe' }\"`) do set \"EASYPROXY_TARGET_EXE=%%I\"" + Environment.NewLine
+            + "if not exist \"%EASYPROXY_TARGET_EXE%\" (" + Environment.NewLine
+            + "  echo claude.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
+            + "  pause" + Environment.NewLine
+            + "  exit /b 1" + Environment.NewLine
+            + ")" + Environment.NewLine;
     }
 
     private static string BuildCodexAppxResolutionLines(string fallbackExecutablePath)
@@ -349,6 +373,11 @@ internal static class ProxyLauncherScriptGenerator
             return "Codex-Proxy.lnk";
         }
 
+        if (IsClaudeExecutable(executablePath, displayName))
+        {
+            return "Claude-Proxy.lnk";
+        }
+
         return string.IsNullOrWhiteSpace(displayName)
             ? null
             : MakeSafeFileName(displayName + "-Proxy") + ".lnk";
@@ -371,6 +400,13 @@ internal static class ProxyLauncherScriptGenerator
         return Path.GetFileNameWithoutExtension(executablePath).Equals("Codex", StringComparison.OrdinalIgnoreCase)
             || executablePath.Contains("OpenAI.Codex", StringComparison.OrdinalIgnoreCase)
             || displayName.Contains("Codex", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsClaudeExecutable(string executablePath, string displayName)
+    {
+        return Path.GetFileNameWithoutExtension(executablePath).Equals("claude", StringComparison.OrdinalIgnoreCase)
+            || executablePath.Contains("Claude", StringComparison.OrdinalIgnoreCase)
+            || displayName.Contains("Claude", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsWindowsAppsPath(string path)

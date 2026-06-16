@@ -60,6 +60,9 @@ public sealed class ProcessProxyLauncher
             startInfo.WorkingDirectory = Path.GetDirectoryName(targetPath) ?? _loadedConfig.BaseDirectory;
         }
 
+        startInfo.WorkingDirectory = ResolveAccessibleWorkingDirectory(
+            startInfo.WorkingDirectory, targetPath, _loadedConfig.BaseDirectory, _logger);
+
         ProxyEnvironmentProfile? profile = null;
         if (_config.InjectProxyEnvironment)
         {
@@ -187,7 +190,85 @@ public sealed class ProcessProxyLauncher
         {
             _logger.Warn(
                 "当前 targetPath 位于 WindowsApps，EasyProxy 会直接以 exe 方式启动目标程序。" +
-                "部分 MSIX/Store 应用可能缺少正常应用激活上下文；如果目标日志出现 helper paths unavailable，建议优先使用 EasyProxy 识别到的 Codex/Cursor/Antigravity 安装路径，或改用非 Store 版本。");
+                "部分 MSIX/Store 应用可能缺少正常应用激活上下文；如果目标日志出现 helper paths unavailable，建议优先使用 EasyProxy 识别到的 Codex/Cursor/Claude/Antigravity 安装路径，或改用非 Store 版本。");
+        }
+    }
+
+    private static string ResolveAccessibleWorkingDirectory(
+        string workingDirectory,
+        string targetPath,
+        string baseDirectory,
+        AppLogger logger)
+    {
+        if (IsDirectoryAccessible(workingDirectory))
+        {
+            return workingDirectory;
+        }
+
+        logger.Warn($"工作目录不可访问: {workingDirectory}");
+
+        // Fallback 1: target executable's own directory.
+        var targetDirectory = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrWhiteSpace(targetDirectory)
+            && !string.Equals(targetDirectory, workingDirectory, StringComparison.OrdinalIgnoreCase)
+            && IsDirectoryAccessible(targetDirectory))
+        {
+            logger.Info($"已回退工作目录至目标程序所在目录: {targetDirectory}");
+            return targetDirectory;
+        }
+
+        // Fallback 2: config base directory.
+        if (!string.IsNullOrWhiteSpace(baseDirectory)
+            && !string.Equals(baseDirectory, workingDirectory, StringComparison.OrdinalIgnoreCase)
+            && IsDirectoryAccessible(baseDirectory))
+        {
+            logger.Info($"已回退工作目录至配置目录: {baseDirectory}");
+            return baseDirectory;
+        }
+
+        // Fallback 3: user profile directory.
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile) && IsDirectoryAccessible(userProfile))
+        {
+            logger.Info($"已回退工作目录至用户目录: {userProfile}");
+            return userProfile;
+        }
+
+        // Last resort: current directory.
+        var currentDirectory = Directory.GetCurrentDirectory();
+        logger.Info($"已回退工作目录至当前目录: {currentDirectory}");
+        return currentDirectory;
+    }
+
+    private static bool IsDirectoryAccessible(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!Directory.Exists(directory))
+            {
+                return false;
+            }
+
+            // WindowsApps directories are not usable as working directories for
+            // non-packaged processes, even when the directory technically exists.
+            if (directory.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase)
+                || directory.EndsWith(@"\WindowsApps", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // Probe actual read access by enumerating entries.
+            Directory.EnumerateFileSystemEntries(directory).GetEnumerator().Dispose();
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

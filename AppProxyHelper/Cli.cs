@@ -123,7 +123,7 @@ public static class Cli
         else
         {
             var app = TargetApplicationCatalog.FindInstalledById(appId)
-                ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, codex, cursor, antigravity。");
+                ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, codex, cursor, claude, antigravity。");
             scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri, outputDirectory));
         }
 
@@ -142,7 +142,7 @@ public static class Cli
 
         if (scripts.Count == 0)
         {
-            throw new CommandLineException("没有找到 Codex、Cursor 或 Antigravity。也可以用 --target 指定 exe。");
+            throw new CommandLineException("没有找到 Codex、Cursor、Claude 或 Antigravity。也可以用 --target 指定 exe。");
         }
 
         Console.WriteLine("已生成代理启动脚本:");
@@ -205,13 +205,13 @@ public static class Cli
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
               EasyProxy run --config app-proxy.json
-              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|antigravity|antigravity-ide] [--out DIR]
+              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|claude|antigravity|antigravity-ide] [--out DIR]
               EasyProxy ui [--config app-proxy.json]
 
             说明:
               EasyProxy 会启动目标 Electron/Chromium 应用，并自动注入 --disable-quic、
               --proxy-server、--proxy-bypass-list 以及 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
-              等环境变量。它面向 Codex、Cursor、Antigravity 这类桌面 AI 应用，不再提供
+              等环境变量。它面向 Codex、Cursor、Claude、Antigravity 这类桌面 AI 应用，不再提供
               Transparent/WinDivert 透明拦截入口。
             """);
     }

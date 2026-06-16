@@ -12,6 +12,7 @@ internal static class TargetApplicationCatalog
         var presets = new List<TargetApplicationPreset>();
         AddTargetPreset(presets, "codex", "Codex 应用", GetCodexCandidates());
         AddTargetPreset(presets, "cursor", "Cursor 应用", GetCursorCandidates());
+        AddTargetPreset(presets, "claude", "Claude 应用", GetClaudeCandidates());
         AddTargetPreset(presets, "antigravity", "Antigravity 应用", GetAntigravityCandidates());
         AddTargetPreset(presets, "antigravity-ide", "Antigravity IDE", GetAntigravityIdeCandidates());
         return presets;
@@ -175,6 +176,48 @@ internal static class TargetApplicationCatalog
         foreach (var programFiles in GetProgramFilesDirectories())
         {
             yield return Path.Combine(programFiles, "Cursor", "Cursor.exe");
+        }
+    }
+
+    private static IEnumerable<string> GetClaudeCandidates()
+    {
+        foreach (var executable in FindExecutablesOnPath("claude.exe"))
+        {
+            var directory = Path.GetDirectoryName(executable);
+            var appDirectory = directory is null ? null : Path.GetDirectoryName(directory);
+            if (directory is not null
+                && !string.IsNullOrWhiteSpace(appDirectory)
+                && directory.EndsWith(@"\resources", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return Path.Combine(appDirectory, "claude.exe");
+            }
+
+            yield return executable;
+        }
+
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (!string.IsNullOrWhiteSpace(programFiles))
+        {
+            foreach (var packageDirectory in GetAppxPackageInstallLocations("Claude"))
+            {
+                yield return Path.Combine(packageDirectory, "app", "claude.exe");
+            }
+
+            var windowsApps = Path.Combine(programFiles, "WindowsApps");
+            foreach (var packageDirectory in EnumerateWindowsAppPackageDirectories(
+                windowsApps,
+                "Claude",
+                "pzs8sxrjxfjjc"))
+            {
+                yield return Path.Combine(packageDirectory, "app", "claude.exe");
+            }
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return Path.Combine(localAppData, "Programs", "Claude", "claude.exe");
+            yield return Path.Combine(localAppData, "Programs", "claude", "claude.exe");
         }
     }
 

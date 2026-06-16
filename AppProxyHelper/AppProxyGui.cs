@@ -44,7 +44,6 @@ internal sealed class AppProxyGuiForm : Form
     private const string ManualTargetPresetText = "手动选择";
 
     private readonly TextBox _configPathText = new();
-    private readonly ComboBox _targetPresetCombo = new();
     private readonly TextBox _targetPathText = new();
     private readonly TextBox _targetArgumentsText = new();
     private readonly TextBox _workingDirectoryText = new();
@@ -74,9 +73,13 @@ internal sealed class AppProxyGuiForm : Form
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly List<TargetApplicationPreset> _targetPresets = new();
+    private readonly CheckBox _codexCheck = new();
+    private readonly CheckBox _cursorCheck = new();
+    private readonly CheckBox _claudeCheck = new();
+    private readonly CheckBox _antigravityCheck = new();
+    private readonly CheckBox _antigravityIdeCheck = new();
+    private readonly Button _createScriptsButton = new();
     private CancellationTokenSource? _operationCts;
-    private bool _updatingTargetPreset;
-    private bool _allowClose;
 
     internal bool CanCloseForElevatedRestart => _operationCts is null;
 
@@ -115,6 +118,8 @@ internal sealed class AppProxyGuiForm : Form
         {
             Shown += AutoRunOnShown;
         }
+
+        DarkTheme.Apply(this);
     }
 
     private static string ResolveInitialConfigPath(string? initialConfigPath)
@@ -140,19 +145,12 @@ internal sealed class AppProxyGuiForm : Form
 
     internal void CloseForElevatedRestart()
     {
-        _allowClose = true;
         Close();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!_allowClose && e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            MinimizeToTray();
-            return;
-        }
-
+        _operationCts?.Cancel();
         _trayIcon.Visible = false;
         base.OnFormClosing(e);
     }
@@ -237,7 +235,6 @@ internal sealed class AppProxyGuiForm : Form
 
     private void ExitFromTray()
     {
-        _allowClose = true;
         _operationCts?.Cancel();
         Close();
     }
@@ -264,11 +261,14 @@ internal sealed class AppProxyGuiForm : Form
             Padding = new Padding(8)
         };
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = DarkTheme.CreateDarkTabControl();
+        tabs.Dock = DockStyle.Fill;
         tabs.TabPages.Add(BuildHomeTab());
         tabs.TabPages.Add(BuildAdvancedTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
         content.Controls.Add(tabs);
+
+
         root.Controls.Add(content, 0, 1);
     }
 
@@ -353,35 +353,198 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 3,
             Padding = new Padding(6)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, TargetSourceHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, HomeProxyHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, MainActionBarHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 85)); // GlobalProxyGroup
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 185)); // Columns layout
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // LogGroup
         page.Controls.Add(root);
 
-        root.Controls.Add(BuildTargetSourceGroup(), 0, 0);
-        root.Controls.Add(BuildHomeProxyGroup(), 0, 1);
-        root.Controls.Add(BuildActionBar(), 0, 2);
-        root.Controls.Add(BuildLogGroup(), 0, 3);
+        root.Controls.Add(BuildGlobalProxyGroup(), 0, 0);
+
+        // Columns layout
+        var columns = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        columns.Controls.Add(BuildManualProxyGroup(), 0, 0);
+        columns.Controls.Add(BuildAiAppProxyGroup(), 1, 0);
+
+        root.Controls.Add(columns, 0, 1);
+        root.Controls.Add(BuildLogGroup(), 0, 2);
 
         return page;
     }
 
-    private Control BuildHomeProxyGroup()
+    private Control BuildGlobalProxyGroup()
     {
         var group = new GroupBox
         {
-            Text = "代理地址",
+            Text = "全局代理设置",
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 6)
         };
 
-        var table = MakeSingleColumnTable(1);
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            Padding = new Padding(6, 6, 6, 6)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
+
+        table.Controls.Add(MakeLabel("代理地址"), 0, 0);
+
+        _proxyUriText.Dock = DockStyle.Fill;
+        _proxyUriText.Margin = new Padding(3, 2, 3, 2);
+        table.Controls.Add(_proxyUriText, 1, 0);
+
+        ConfigureButton(_checkButton, "检查代理");
+        _checkButton.Click += async (_, _) => await RunOperationAsync("检查", RunCheckAsync);
+        table.Controls.Add(_checkButton, 2, 0);
+
+        var openLogButton = MakeButton("打开日志目录");
+        openLogButton.Click += (_, _) => OpenLogDirectory();
+        table.Controls.Add(openLogButton, 3, 0);
+
         group.Controls.Add(table);
-        AddRow(table, 0, "代理地址", _proxyUriText);
+        return group;
+    }
+
+    private Control BuildManualProxyGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "手动代理运行",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 3, 0)
+        };
+
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 3,
+            Padding = new Padding(6, 8, 6, 6)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
+        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        // Row 0: Target EXE path
+        table.Controls.Add(MakeLabel("目标 EXE"), 0, 0);
+        _targetPathText.Dock = DockStyle.Fill;
+        _targetPathText.Margin = new Padding(3, 2, 3, 2);
+        table.Controls.Add(_targetPathText, 1, 0);
+
+        var browseButton = MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*"));
+        table.Controls.Add(browseButton, 2, 0);
+
+        // Row 1: Run and Stop buttons
+        var buttonsPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        buttonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        buttonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        buttonsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        ConfigureButton(_runButton, "启动代理");
+        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync);
+        buttonsPanel.Controls.Add(_runButton, 0, 0);
+
+        ConfigureButton(_stopButton, "停止运行");
+        _stopButton.Enabled = false;
+        _stopButton.Click += (_, _) => _operationCts?.Cancel();
+        buttonsPanel.Controls.Add(_stopButton, 1, 0);
+
+        table.Controls.Add(buttonsPanel, 1, 1);
+        table.SetColumnSpan(buttonsPanel, 2);
+
+        // Row 2: Status label
+        _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.Margin = new Padding(8, 0, 0, 0);
+        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _statusLabel.ForeColor = SystemColors.GrayText;
+        table.Controls.Add(_statusLabel, 0, 2);
+        table.SetColumnSpan(_statusLabel, 3);
+
+        group.Controls.Add(table);
+        return group;
+    }
+
+    private Control BuildAiAppProxyGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "AI 应用代理生成",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(3, 0, 0, 0)
+        };
+
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(6, 8, 6, 6)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
+
+        var checkTable = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 3,
+            Margin = new Padding(0)
+        };
+        checkTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        checkTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+
+        ConfigureCheck(_codexCheck, "Codex 应用");
+        ConfigureCheck(_cursorCheck, "Cursor 应用");
+        ConfigureCheck(_claudeCheck, "Claude 应用");
+        ConfigureCheck(_antigravityCheck, "Antigravity 应用");
+        ConfigureCheck(_antigravityIdeCheck, "Antigravity IDE");
+
+        checkTable.Controls.Add(_codexCheck, 0, 0);
+        checkTable.Controls.Add(_cursorCheck, 1, 0);
+        checkTable.Controls.Add(_claudeCheck, 0, 1);
+        checkTable.Controls.Add(_antigravityCheck, 1, 1);
+        checkTable.Controls.Add(_antigravityIdeCheck, 0, 2);
+
+        table.Controls.Add(checkTable, 0, 0);
+
+        ConfigureButton(_createScriptsButton, "一键生成代理启动脚本");
+        _createScriptsButton.Click += (_, _) => CreateLauncherScripts();
+        table.Controls.Add(_createScriptsButton, 0, 1);
+
+        group.Controls.Add(table);
         return group;
     }
 
@@ -444,25 +607,7 @@ internal sealed class AppProxyGuiForm : Form
         return group;
     }
 
-    private Control BuildTargetSourceGroup()
-    {
-        var group = new GroupBox
-        {
-            Text = "Electron 应用",
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, 6)
-        };
 
-        var table = MakeTargetSourceTable();
-        group.Controls.Add(table);
-
-        ConfigureTargetPresetCombo();
-        AddRow(table, 0, "常用应用", _targetPresetCombo);
-
-        AddRow(table, 1, "目标 exe", _targetPathText, MakeBrowseButton(() => BrowseFile(_targetPathText, "应用程序 (*.exe)|*.exe|所有文件 (*.*)|*.*")));
-
-        return group;
-    }
 
     private Control BuildAdvancedOptionsGroup()
     {
@@ -549,49 +694,7 @@ internal sealed class AppProxyGuiForm : Form
         return page;
     }
 
-    private Control BuildActionBar()
-    {
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 6
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        ConfigureButton(_checkButton, "检查");
-        _checkButton.Click += async (_, _) => await RunOperationAsync("检查", RunCheckAsync);
-        panel.Controls.Add(_checkButton, 0, 0);
-
-        ConfigureButton(_runButton, "启动");
-        _runButton.Click += async (_, _) => await RunOperationAsync("启动", RunTargetAsync);
-        panel.Controls.Add(_runButton, 1, 0);
-
-        ConfigureButton(_stopButton, "停止");
-        _stopButton.Enabled = false;
-        _stopButton.Click += (_, _) => _operationCts?.Cancel();
-        panel.Controls.Add(_stopButton, 2, 0);
-
-        var createScriptsButton = MakeButton("生成脚本");
-        createScriptsButton.Click += (_, _) => CreateLauncherScripts();
-        panel.Controls.Add(createScriptsButton, 3, 0);
-
-        var openLogButton = MakeButton("打开日志目录");
-        openLogButton.Click += (_, _) => OpenLogDirectory();
-        panel.Controls.Add(openLogButton, 4, 0);
-
-        _statusLabel.Dock = DockStyle.Fill;
-        _statusLabel.Margin = new Padding(8, 0, 0, 0);
-        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _statusLabel.ForeColor = SystemColors.GrayText;
-        panel.Controls.Add(_statusLabel, 5, 0);
-
-        return panel;
-    }
 
     private void BrowseConfig()
     {
@@ -709,10 +812,12 @@ internal sealed class AppProxyGuiForm : Form
 
     private void Populate(AppProxyConfig config)
     {
-        _targetPathText.Text = config.TargetPath;
+        // Manual proxy target path should always default to empty.
+        // Users must explicitly choose an EXE via the browse button.
+        _targetPathText.Text = "";
         _targetArgumentsText.Text = FormatArguments(config.TargetArguments);
         _workingDirectoryText.Text = config.WorkingDirectory ?? "";
-        RefreshTargetPresetSelection(config.TargetPath);
+
         _proxyUriText.Text = config.ProxyUri;
         _logDirectoryText.Text = config.LogDirectory;
         SelectCombo(_minimumLogLevelCombo, config.MinimumLogLevel);
@@ -923,24 +1028,13 @@ internal sealed class AppProxyGuiForm : Form
                 ? new AppProxyConfig().ProxyUri
                 : _proxyUriText.Text.Trim();
             var scripts = new List<string>();
-            var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var app in TargetApplicationCatalog.FindInstalled())
+            var checkBoxes = new[] { _codexCheck, _cursorCheck, _claudeCheck, _antigravityCheck, _antigravityIdeCheck };
+            foreach (var cb in checkBoxes)
             {
-                scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri));
-                seenTargets.Add(Path.GetFullPath(app.ExecutablePath));
-            }
-
-            var currentTarget = _targetPathText.Text.Trim();
-            if (!string.IsNullOrWhiteSpace(currentTarget) && File.Exists(currentTarget))
-            {
-                var fullCurrentTarget = Path.GetFullPath(currentTarget);
-                if (seenTargets.Add(fullCurrentTarget))
+                if (cb.Checked && cb.Tag is TargetApplicationPreset app)
                 {
-                    scripts.Add(ProxyLauncherScriptGenerator.CreateScript(
-                        fullCurrentTarget,
-                        TargetApplicationCatalog.GuessNameFromPath(fullCurrentTarget),
-                        proxyUri));
+                    scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri));
                 }
             }
 
@@ -948,7 +1042,7 @@ internal sealed class AppProxyGuiForm : Form
             {
                 MessageBox.Show(
                     this,
-                    "没有找到 Codex、Cursor 或 Antigravity，也没有可用的当前目标 exe。",
+                    "请至少勾选一个已检测到的 AI 应用来生成代理启动脚本。",
                     "生成脚本",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1005,7 +1099,6 @@ internal sealed class AppProxyGuiForm : Form
         target.Text = dialog.FileName;
         if (ReferenceEquals(target, _targetPathText))
         {
-            RefreshTargetPresetSelection(dialog.FileName);
             if (string.IsNullOrWhiteSpace(_workingDirectoryText.Text))
             {
                 _workingDirectoryText.Text = Path.GetDirectoryName(dialog.FileName) ?? "";
@@ -1040,105 +1133,40 @@ internal sealed class AppProxyGuiForm : Form
         }
     }
 
-    private void ConfigureTargetPresetCombo()
-    {
-        _targetPresetCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _targetPresetCombo.Dock = DockStyle.Fill;
-        _targetPresetCombo.SelectedIndexChanged += (_, _) =>
-        {
-            if (_updatingTargetPreset || _targetPresetCombo.SelectedItem is not TargetApplicationPreset preset)
-            {
-                return;
-            }
-
-            ApplyTargetPreset(preset);
-        };
-    }
-
     private void ConfigureTargetPresets()
     {
         _targetPresets.Clear();
         _targetPresets.AddRange(FindTargetApplicationPresets());
 
-        _updatingTargetPreset = true;
-        _targetPresetCombo.BeginUpdate();
-        try
-        {
-            _targetPresetCombo.Items.Clear();
-            _targetPresetCombo.Items.Add(ManualTargetPresetText);
-            foreach (var preset in _targetPresets)
-            {
-                _targetPresetCombo.Items.Add(preset);
-            }
-
-            _targetPresetCombo.SelectedIndex = 0;
-            _targetPresetCombo.Enabled = _targetPresetCombo.Items.Count > 1;
-        }
-        finally
-        {
-            _targetPresetCombo.EndUpdate();
-            _updatingTargetPreset = false;
-        }
+        UpdateAiAppCheckbox(_codexCheck, "codex", "Codex 应用");
+        UpdateAiAppCheckbox(_cursorCheck, "cursor", "Cursor 应用");
+        UpdateAiAppCheckbox(_claudeCheck, "claude", "Claude 应用");
+        UpdateAiAppCheckbox(_antigravityCheck, "antigravity", "Antigravity 应用");
+        UpdateAiAppCheckbox(_antigravityIdeCheck, "antigravity-ide", "Antigravity IDE");
     }
 
-    private void ApplyTargetPreset(TargetApplicationPreset preset)
+    private void UpdateAiAppCheckbox(CheckBox checkBox, string id, string displayName)
     {
-        _targetPathText.Text = preset.ExecutablePath;
-        _workingDirectoryText.Text = Path.GetDirectoryName(preset.ExecutablePath) ?? "";
-        _targetArgumentsText.Text = FormatArguments(BuildChromiumArgumentsForCurrentProxy());
-
-        SetStatus($"已选择常用应用: {preset.Name}");
-    }
-
-    private void RefreshTargetPresetSelection(string targetPath)
-    {
-        if (_targetPresetCombo.Items.Count == 0)
+        var preset = _targetPresets.FirstOrDefault(p => p.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+        if (preset is not null)
         {
-            return;
+            checkBox.Text = $"{displayName} (已检测到)";
+            checkBox.Enabled = true;
+            checkBox.Checked = true;
+            checkBox.Tag = preset;
         }
-
-        var comparableTarget = GetComparablePath(targetPath);
-        _updatingTargetPreset = true;
-        try
+        else
         {
-            _targetPresetCombo.SelectedIndex = 0;
-            if (comparableTarget is null)
-            {
-                return;
-            }
-
-            for (var i = 0; i < _targetPresetCombo.Items.Count; i++)
-            {
-                if (_targetPresetCombo.Items[i] is not TargetApplicationPreset preset)
-                {
-                    continue;
-                }
-
-                var comparablePreset = GetComparablePath(preset.ExecutablePath);
-                if (string.Equals(comparableTarget, comparablePreset, StringComparison.OrdinalIgnoreCase))
-                {
-                    _targetPresetCombo.SelectedIndex = i;
-                    return;
-                }
-            }
-        }
-        finally
-        {
-            _updatingTargetPreset = false;
+            checkBox.Text = $"{displayName} (未安装)";
+            checkBox.Enabled = false;
+            checkBox.Checked = false;
+            checkBox.Tag = null;
         }
     }
 
     private static IReadOnlyList<TargetApplicationPreset> FindTargetApplicationPresets()
     {
         return TargetApplicationCatalog.FindInstalled();
-    }
-
-    private string[] BuildChromiumArgumentsForCurrentProxy()
-    {
-        var proxyUri = string.IsNullOrWhiteSpace(_proxyUriText.Text)
-            ? new AppProxyConfig().ProxyUri
-            : _proxyUriText.Text.Trim();
-        return ConfigLoader.BuildDefaultChromiumProxyArguments(proxyUri);
     }
 
     private static Icon LoadApplicationIcon()
