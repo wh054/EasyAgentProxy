@@ -39,6 +39,8 @@ internal sealed class AppProxyGuiForm : Form
     private const int CompactRowHeight = 36;
     private const int ButtonHeight = 32;
     private const int HomeProxyHeight = 80;
+    private const int HomeColumnsHeight = 220;
+    private const int AiAppCheckRowsHeight = 88;
     private const int TargetSourceHeight = 120;
     private const int ConfigGroupHeight = 82;
     private const string ManualTargetPresetText = "手动选择";
@@ -79,6 +81,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly CheckBox _antigravityCheck = new();
     private readonly CheckBox _antigravityIdeCheck = new();
     private readonly Button _createScriptsButton = new();
+    private readonly Button _cliContextMenuButton = new();
     private CancellationTokenSource? _operationCts;
 
     internal bool CanCloseForElevatedRestart => _operationCts is null;
@@ -357,7 +360,7 @@ internal sealed class AppProxyGuiForm : Form
             Padding = new Padding(6)
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 85)); // GlobalProxyGroup
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 185)); // Columns layout
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, HomeColumnsHeight)); // Columns layout
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // LogGroup
         page.Controls.Add(root);
 
@@ -506,11 +509,12 @@ internal sealed class AppProxyGuiForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Padding = new Padding(6, 8, 6, 6)
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, AiAppCheckRowsHeight));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
         table.RowStyles.Add(new RowStyle(SizeType.Absolute, CompactRowHeight));
 
         var checkTable = new TableLayoutPanel
@@ -543,6 +547,10 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureButton(_createScriptsButton, "一键生成代理启动脚本");
         _createScriptsButton.Click += (_, _) => CreateLauncherScripts();
         table.Controls.Add(_createScriptsButton, 0, 1);
+
+        ConfigureButton(_cliContextMenuButton, "CLI 右键菜单...");
+        _cliContextMenuButton.Click += (_, _) => OpenCliContextMenuDialog();
+        table.Controls.Add(_cliContextMenuButton, 0, 2);
 
         group.Controls.Add(table);
         return group;
@@ -1062,6 +1070,13 @@ internal sealed class AppProxyGuiForm : Form
             MessageBox.Show(this, ex.Message, "生成脚本失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             SetStatus("生成脚本失败。");
         }
+    }
+
+    private void OpenCliContextMenuDialog()
+    {
+        using var dialog = new CliContextMenuDialog(_proxyUriText.Text.Trim());
+        dialog.ShowDialog(this);
+        SetStatus("CLI 右键菜单管理已关闭。");
     }
 
     private void BrowseFile(TextBox target, string filter)
