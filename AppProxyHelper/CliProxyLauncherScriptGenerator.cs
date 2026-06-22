@@ -55,9 +55,12 @@ internal static class CliProxyLauncherScriptGenerator
 
     internal static string BuildScript(CliToolDefinition tool, ProxyEnvironmentProfile profile)
     {
+        var proxyEnvironmentVariables = tool.Id.Equals("claude-code", StringComparison.OrdinalIgnoreCase)
+            ? profile.GetHttpProxyEnvironmentVariables()
+            : profile.GetEnvironmentVariables();
         var environmentLines = string.Join(
             Environment.NewLine,
-            profile.GetEnvironmentVariables()
+            proxyEnvironmentVariables
                 .Select(pair => "set \"" + pair.Key + "=" + EscapeSetValue(pair.Value) + "\""));
         var command = GetPowerShellCommand(tool);
 

@@ -22,6 +22,7 @@ internal static class KnownEditorProxySettings
         string? antigravityCloudCodeUrl = null,
         string? antigravityIdeLanguageServerPath = null)
     {
+        var writtenSettingsPaths = new List<string>();
         var settingsPaths = GetSettingsPaths(executablePath).ToArray();
         foreach (var settingsPath in settingsPaths)
         {
@@ -30,9 +31,17 @@ internal static class KnownEditorProxySettings
                 httpProxyUri,
                 antigravityCloudCodeUrl,
                 antigravityIdeLanguageServerPath);
+            writtenSettingsPaths.Add(settingsPath);
         }
 
-        return settingsPaths;
+        var claudeCodeSettingsPath = GetClaudeCodeSettingsPath(executablePath);
+        if (!string.IsNullOrWhiteSpace(claudeCodeSettingsPath))
+        {
+            WriteClaudeCodeSettings(claudeCodeSettingsPath, httpProxyUri);
+            writtenSettingsPaths.Add(claudeCodeSettingsPath);
+        }
+
+        return writtenSettingsPaths;
     }
 
     private static IEnumerable<string> GetSettingsPaths(string executablePath)
@@ -56,6 +65,21 @@ internal static class KnownEditorProxySettings
         {
             yield return Path.Combine(appData, "Cursor", "User", "settings.json");
         }
+    }
+
+    private static string? GetClaudeCodeSettingsPath(string executablePath)
+    {
+        var fileName = Path.GetFileName(executablePath);
+        if (!fileName.Equals("claude.exe", StringComparison.OrdinalIgnoreCase)
+            && !executablePath.Contains("Claude", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrWhiteSpace(userProfile)
+            ? null
+            : Path.Combine(userProfile, ".claude", "settings.json");
     }
 
     private static void WriteVsCodeStyleSettings(
@@ -96,6 +120,41 @@ internal static class KnownEditorProxySettings
             root["codeiumDev.languageServerBinaryPath"] = antigravityIdeLanguageServerPath;
             root["codeiumDev.machineLanguageServerBinaryPath"] = antigravityIdeLanguageServerPath;
         }
+
+        File.WriteAllText(settingsPath, root.ToJsonString(JsonOptions));
+    }
+
+    internal static void WriteClaudeCodeSettings(string settingsPath, string httpProxyUri)
+    {
+        var directory = Path.GetDirectoryName(settingsPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var root = ReadSettingsObject(settingsPath);
+        var env = root["env"] as JsonObject;
+        if (env is null)
+        {
+            env = new JsonObject();
+            root["env"] = env;
+        }
+
+        env["HTTP_PROXY"] = httpProxyUri;
+        env["HTTPS_PROXY"] = httpProxyUri;
+        env["http_proxy"] = httpProxyUri;
+        env["https_proxy"] = httpProxyUri;
+        env["GRPC_PROXY"] = httpProxyUri;
+        env["grpc_proxy"] = httpProxyUri;
+        env["NO_PROXY"] = "localhost,127.0.0.1,::1";
+        env["no_proxy"] = "localhost,127.0.0.1,::1";
+        env["NO_GRPC_PROXY"] = "localhost,127.0.0.1,::1";
+        env["no_grpc_proxy"] = "localhost,127.0.0.1,::1";
+        env.Remove("ALL_PROXY");
+        env.Remove("all_proxy");
+        env.Remove("CLOUDSDK_PROXY_TYPE");
+        env.Remove("CLOUDSDK_PROXY_ADDRESS");
+        env.Remove("CLOUDSDK_PROXY_PORT");
 
         File.WriteAllText(settingsPath, root.ToJsonString(JsonOptions));
     }

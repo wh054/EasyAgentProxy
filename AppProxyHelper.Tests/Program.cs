@@ -1,4 +1,5 @@
 using AppProxyHelper;
+using System.Text.Json.Nodes;
 
 internal static class Program
 {
@@ -8,6 +9,9 @@ internal static class Program
         {
             ("catalog exposes claude and codex CLI tools", CatalogExposesClaudeAndCodex),
             ("launcher script injects proxy environment and starts terminal", LauncherScriptInjectsProxyEnvironment),
+            ("codex launcher script keeps all proxy environment", CodexLauncherScriptKeepsAllProxyEnvironment),
+            ("claude desktop launcher uses http proxy argument", ClaudeDesktopLauncherUsesHttpProxyArgument),
+            ("claude code settings receive http proxy env", ClaudeCodeSettingsReceiveHttpProxyEnv),
             ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens)
         };
 
@@ -53,7 +57,8 @@ internal static class Program
 
         AssertContains(script, "set \"HTTP_PROXY=http://127.0.0.1:7890\"");
         AssertContains(script, "set \"HTTPS_PROXY=http://127.0.0.1:7890\"");
-        AssertContains(script, "set \"ALL_PROXY=socks5://127.0.0.1:7890\"");
+        AssertDoesNotContain(script, "set \"ALL_PROXY=socks5://127.0.0.1:7890\"");
+        AssertDoesNotContain(script, "set \"all_proxy=socks5://127.0.0.1:7890\"");
         AssertContains(script, "if not exist \"%EASYPROXY_WORKDIR%\" set \"EASYPROXY_WORKDIR=%USERPROFILE%\"");
         AssertContains(script, "where wt.exe >nul 2>nul");
         AssertContains(script, "wt.exe -d \"%EASYPROXY_WORKDIR%\" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -Command \"claude\"");
@@ -61,6 +66,77 @@ internal static class Program
         AssertDoesNotContain(script, "Set-Location");
         AssertDoesNotContain(script, "; &");
         AssertDoesNotContain(script, "& claude");
+    }
+
+    private static void CodexLauncherScriptKeepsAllProxyEnvironment()
+    {
+        var tool = CliToolCatalog.All.Single(tool => tool.Id == "codex-cli");
+        var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
+        var script = CliProxyLauncherScriptGenerator.BuildScript(tool, profile);
+
+        AssertContains(script, "set \"HTTP_PROXY=http://127.0.0.1:7890\"");
+        AssertContains(script, "set \"HTTPS_PROXY=http://127.0.0.1:7890\"");
+        AssertContains(script, "set \"ALL_PROXY=socks5://127.0.0.1:7890\"");
+        AssertContains(script, "set \"all_proxy=socks5://127.0.0.1:7890\"");
+        AssertContains(script, "wt.exe -d \"%EASYPROXY_WORKDIR%\" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -Command \"codex\"");
+    }
+
+    private static void ClaudeDesktopLauncherUsesHttpProxyArgument()
+    {
+        var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
+        var script = ProxyLauncherScriptGenerator.BuildScript(
+            @"C:\Program Files\WindowsApps\Claude_1.0.0.0_x64__pzs8sxrjxfjjc\app\claude.exe",
+            profile,
+            antigravityRelayScriptPath: null,
+            includeAntigravityLanguageServerShim: false,
+            resolveCodexAtLaunch: false,
+            resolveClaudeAtLaunch: true);
+
+        AssertContains(script, "\"--proxy-server=http://127.0.0.1:7890\"");
+        AssertContains(script, "Get-Service -Name 'CoworkVMService'");
+        AssertDoesNotContain(script, "\"--proxy-server=socks5://127.0.0.1:7890\"");
+        AssertDoesNotContain(script, "set \"ALL_PROXY=socks5://127.0.0.1:7890\"");
+    }
+
+    private static void ClaudeCodeSettingsReceiveHttpProxyEnv()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), "EasyProxyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        try
+        {
+            var settingsPath = Path.Combine(tempDirectory, "settings.json");
+            File.WriteAllText(settingsPath, """
+                {
+                  "env": {
+                    "KEEP_ME": "1",
+                    "ALL_PROXY": "socks5://127.0.0.1:7890",
+                    "all_proxy": "socks5://127.0.0.1:7890",
+                    "CLOUDSDK_PROXY_TYPE": "http"
+                  },
+                  "model": "opus"
+                }
+                """);
+
+            KnownEditorProxySettings.WriteClaudeCodeSettings(settingsPath, "http://127.0.0.1:7890");
+
+            var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+            var env = root["env"]!.AsObject();
+            AssertEqual("1", env["KEEP_ME"]!.GetValue<string>(), "existing env preserved");
+            AssertEqual("opus", root["model"]!.GetValue<string>(), "existing setting preserved");
+            AssertEqual("http://127.0.0.1:7890", env["HTTP_PROXY"]!.GetValue<string>(), "HTTP_PROXY");
+            AssertEqual("http://127.0.0.1:7890", env["HTTPS_PROXY"]!.GetValue<string>(), "HTTPS_PROXY");
+            AssertEqual("localhost,127.0.0.1,::1", env["NO_PROXY"]!.GetValue<string>(), "NO_PROXY");
+            AssertEqual(false, env.ContainsKey("ALL_PROXY"), "ALL_PROXY removed");
+            AssertEqual(false, env.ContainsKey("all_proxy"), "all_proxy removed");
+            AssertEqual(false, env.ContainsKey("CLOUDSDK_PROXY_TYPE"), "CLOUDSDK_PROXY_TYPE removed");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
     }
 
     private static void ContextMenuCommandsPassExplorerDirectoryTokens()

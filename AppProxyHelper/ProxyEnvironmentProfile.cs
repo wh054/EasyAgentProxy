@@ -69,6 +69,24 @@ internal sealed class ProxyEnvironmentProfile
         }
     }
 
+    public IEnumerable<KeyValuePair<string, string>> GetHttpProxyEnvironmentVariables()
+    {
+        yield return new KeyValuePair<string, string>("HTTP_PROXY", HttpProxyUri);
+        yield return new KeyValuePair<string, string>("HTTPS_PROXY", HttpProxyUri);
+        yield return new KeyValuePair<string, string>("http_proxy", HttpProxyUri);
+        yield return new KeyValuePair<string, string>("https_proxy", HttpProxyUri);
+        yield return new KeyValuePair<string, string>("GRPC_PROXY", HttpProxyUri);
+        yield return new KeyValuePair<string, string>("grpc_proxy", HttpProxyUri);
+
+        if (!string.IsNullOrWhiteSpace(NoProxyValue))
+        {
+            yield return new KeyValuePair<string, string>("NO_PROXY", NoProxyValue);
+            yield return new KeyValuePair<string, string>("no_proxy", NoProxyValue);
+            yield return new KeyValuePair<string, string>("NO_GRPC_PROXY", NoProxyValue);
+            yield return new KeyValuePair<string, string>("no_grpc_proxy", NoProxyValue);
+        }
+    }
+
     private bool TryGetCloudSdkProxyValues(
         out string type,
         out string address,

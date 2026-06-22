@@ -147,7 +147,7 @@ internal static class ProxyLauncherScriptGenerator
         return scripts;
     }
 
-    private static string BuildScript(
+    internal static string BuildScript(
         string executablePath,
         ProxyEnvironmentProfile profile,
         string? antigravityRelayScriptPath,
@@ -155,12 +155,18 @@ internal static class ProxyLauncherScriptGenerator
         bool resolveCodexAtLaunch,
         bool resolveClaudeAtLaunch)
     {
-        var arguments = ConfigLoader.BuildDefaultChromiumProxyArguments(profile.ChromiumProxyUri)
+        var chromiumProxyUri = resolveClaudeAtLaunch
+            ? profile.HttpProxyUri
+            : profile.ChromiumProxyUri;
+        var arguments = ConfigLoader.BuildDefaultChromiumProxyArguments(chromiumProxyUri)
             .Select(EscapeCommandArgument);
         var joinedArguments = string.Join(" ", arguments);
+        var proxyEnvironmentVariables = resolveClaudeAtLaunch
+            ? profile.GetHttpProxyEnvironmentVariables()
+            : profile.GetEnvironmentVariables();
         var environmentLines = string.Join(
             Environment.NewLine,
-            profile.GetEnvironmentVariables()
+            proxyEnvironmentVariables
                 .Select(pair => "set \"" + pair.Key + "=" + EscapeSetValue(pair.Value) + "\""));
         var preLaunchLines = string.IsNullOrWhiteSpace(antigravityRelayScriptPath)
             ? string.Empty
@@ -177,7 +183,7 @@ internal static class ProxyLauncherScriptGenerator
         }
         else if (resolveClaudeAtLaunch)
         {
-            preLaunchLines = BuildClaudeAppxResolutionLines(executablePath) + preLaunchLines;
+            preLaunchLines = BuildClaudeAppxResolutionLines(executablePath) + BuildClaudeVmServiceStartLine() + preLaunchLines;
             targetExecutable = "%EASYPROXY_TARGET_EXE%";
         }
 
@@ -201,6 +207,17 @@ internal static class ProxyLauncherScriptGenerator
             + "  pause" + Environment.NewLine
             + "  exit /b 1" + Environment.NewLine
             + ")" + Environment.NewLine;
+    }
+
+    private static string BuildClaudeVmServiceStartLine()
+    {
+        return "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+            + "$svc = Get-Service -Name 'CoworkVMService' -ErrorAction SilentlyContinue; "
+            + "if ($svc -and $svc.Status -ne 'Running') { "
+            + "Start-Service -Name 'CoworkVMService' -ErrorAction SilentlyContinue; "
+            + "try { $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(10)) } catch {} "
+            + "}\" >nul 2>nul"
+            + Environment.NewLine;
     }
 
     private static string BuildCodexAppxResolutionLines(string fallbackExecutablePath)
