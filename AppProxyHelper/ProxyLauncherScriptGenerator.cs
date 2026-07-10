@@ -224,9 +224,15 @@ internal static class ProxyLauncherScriptGenerator
     {
         var escapedFallback = EscapeSetValue(fallbackExecutablePath);
         return "set \"EASYPROXY_TARGET_EXE=" + escapedFallback + "\"" + Environment.NewLine
-            + "for /f \"usebackq delims=\" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command \"$pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { Join-Path $pkg.InstallLocation 'app\\Codex.exe' }\"`) do set \"EASYPROXY_TARGET_EXE=%%I\"" + Environment.NewLine
+            + "for /f \"usebackq delims=\" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+            + "$pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descending | Select-Object -First 1; "
+            + "if ($pkg) { "
+            + "$chatgpt = Join-Path $pkg.InstallLocation 'app\\ChatGPT.exe'; "
+            + "$codex = Join-Path $pkg.InstallLocation 'app\\Codex.exe'; "
+            + "if (Test-Path $chatgpt) { $chatgpt } elseif (Test-Path $codex) { $codex } "
+            + "}\"`) do set \"EASYPROXY_TARGET_EXE=%%I\"" + Environment.NewLine
             + "if not exist \"%EASYPROXY_TARGET_EXE%\" (" + Environment.NewLine
-            + "  echo Codex.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
+            + "  echo ChatGPT.exe/Codex.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
             + "  pause" + Environment.NewLine
             + "  exit /b 1" + Environment.NewLine
             + ")" + Environment.NewLine;
@@ -414,7 +420,9 @@ internal static class ProxyLauncherScriptGenerator
 
     private static bool IsCodexExecutable(string executablePath, string displayName)
     {
-        return Path.GetFileNameWithoutExtension(executablePath).Equals("Codex", StringComparison.OrdinalIgnoreCase)
+        var fileName = Path.GetFileNameWithoutExtension(executablePath);
+        return fileName.Equals("Codex", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase)
             || executablePath.Contains("OpenAI.Codex", StringComparison.OrdinalIgnoreCase)
             || displayName.Contains("Codex", StringComparison.OrdinalIgnoreCase);
     }

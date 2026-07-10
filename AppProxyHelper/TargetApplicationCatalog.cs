@@ -10,7 +10,7 @@ internal static class TargetApplicationCatalog
     public static IReadOnlyList<TargetApplicationPreset> FindInstalled()
     {
         var presets = new List<TargetApplicationPreset>();
-        AddTargetPreset(presets, "codex", "Codex 应用", GetCodexCandidates());
+        AddTargetPreset(presets, "codex", "ChatGPT (Codex) 应用", GetCodexCandidates());
         AddTargetPreset(presets, "cursor", "Cursor 应用", GetCursorCandidates());
         AddTargetPreset(presets, "claude", "Claude 应用", GetClaudeCandidates());
         AddTargetPreset(presets, "antigravity", "Antigravity 应用", GetAntigravityCandidates());
@@ -86,18 +86,24 @@ internal static class TargetApplicationCatalog
 
     private static IEnumerable<string> GetCodexCandidates()
     {
-        foreach (var executable in FindExecutablesOnPath("Codex.exe"))
+        // OpenAI renamed the Codex desktop app's entry point to ChatGPT.exe;
+        // prefer it, but keep the old Codex.exe candidates as a fallback for
+        // installs that haven't updated yet.
+        foreach (var fileName in new[] { "ChatGPT.exe", "Codex.exe" })
         {
-            var directory = Path.GetDirectoryName(executable);
-            var appDirectory = directory is null ? null : Path.GetDirectoryName(directory);
-            if (directory is not null
-                && !string.IsNullOrWhiteSpace(appDirectory)
-                && directory.EndsWith(@"\resources", StringComparison.OrdinalIgnoreCase))
+            foreach (var executable in FindExecutablesOnPath(fileName))
             {
-                yield return Path.Combine(appDirectory, "Codex.exe");
-            }
+                var directory = Path.GetDirectoryName(executable);
+                var appDirectory = directory is null ? null : Path.GetDirectoryName(directory);
+                if (directory is not null
+                    && !string.IsNullOrWhiteSpace(appDirectory)
+                    && directory.EndsWith(@"\resources", StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return Path.Combine(appDirectory, fileName);
+                }
 
-            yield return executable;
+                yield return executable;
+            }
         }
 
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -105,6 +111,7 @@ internal static class TargetApplicationCatalog
         {
             foreach (var packageDirectory in GetAppxPackageInstallLocations("OpenAI.Codex"))
             {
+                yield return Path.Combine(packageDirectory, "app", "ChatGPT.exe");
                 yield return Path.Combine(packageDirectory, "app", "Codex.exe");
             }
 
@@ -114,6 +121,7 @@ internal static class TargetApplicationCatalog
                 "OpenAI.Codex",
                 "2p2nqsd0c76g0"))
             {
+                yield return Path.Combine(packageDirectory, "app", "ChatGPT.exe");
                 yield return Path.Combine(packageDirectory, "app", "Codex.exe");
             }
         }
@@ -121,6 +129,7 @@ internal static class TargetApplicationCatalog
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (!string.IsNullOrWhiteSpace(localAppData))
         {
+            yield return Path.Combine(localAppData, "Programs", "ChatGPT", "ChatGPT.exe");
             yield return Path.Combine(localAppData, "Programs", "Codex", "Codex.exe");
             yield return Path.Combine(localAppData, "Programs", "codex", "Codex.exe");
         }

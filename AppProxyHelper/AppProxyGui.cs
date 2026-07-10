@@ -530,7 +530,7 @@ internal sealed class AppProxyGuiForm : Form
         checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
-        ConfigureCheck(_codexCheck, "Codex 应用");
+        ConfigureCheck(_codexCheck, "ChatGPT (Codex) 应用");
         ConfigureCheck(_cursorCheck, "Cursor 应用");
         ConfigureCheck(_claudeCheck, "Claude 应用");
         ConfigureCheck(_antigravityCheck, "Antigravity 应用");
@@ -1153,7 +1153,7 @@ internal sealed class AppProxyGuiForm : Form
         _targetPresets.Clear();
         _targetPresets.AddRange(FindTargetApplicationPresets());
 
-        UpdateAiAppCheckbox(_codexCheck, "codex", "Codex 应用");
+        UpdateAiAppCheckbox(_codexCheck, "codex", "ChatGPT (Codex) 应用");
         UpdateAiAppCheckbox(_cursorCheck, "cursor", "Cursor 应用");
         UpdateAiAppCheckbox(_claudeCheck, "claude", "Claude 应用");
         UpdateAiAppCheckbox(_antigravityCheck, "antigravity", "Antigravity 应用");
