@@ -114,7 +114,7 @@ patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关�
 - `AppProxyHelper/ConfigLoader.cs`：配置加载、保存、验证和 Chromium 参数整理。
 - `AppProxyHelper/ProcessProxyLauncher.cs`：目标进程启动和环境变量注入。
 - `AppProxyHelper/ProxyEnvironmentProfile.cs`：统一生成 Chromium 参数、HTTP(S)/gRPC 代理环境变量和 no-proxy 变量。
-- `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置。
+- `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置，并持久化 Codex 后端使用的 `.env` 代理变量。
 - `AppProxyHelper/ProxyLauncherScriptGenerator.cs`：生成应用目录脚本和 `*-Proxy` 快捷方式。
 - `AppProxyHelper/TargetApplicationCatalog.cs`：自动发现 Codex、Cursor、Antigravity、Antigravity IDE。
 - `AppProxyHelper/AntigravityCloudCodeRelay.cs`：Antigravity 系列 CloudCode 本机 relay。

@@ -18,7 +18,8 @@ internal static class ProxyLauncherScriptGenerator
         string executablePath,
         string displayName,
         string proxyUri,
-        string? outputDirectory = null)
+        string? outputDirectory = null,
+        bool enableCodexQqSkin = false)
     {
         if (string.IsNullOrWhiteSpace(executablePath))
         {
@@ -72,9 +73,35 @@ internal static class ProxyLauncherScriptGenerator
 
         var isCodex = IsCodexExecutable(fullExecutablePath, displayName);
         var isClaude = IsClaudeExecutable(fullExecutablePath, displayName);
+        var codexQqSkinStartScript = isCodex && enableCodexQqSkin
+            ? GetCodexQqSkinStartScriptPath()
+            : null;
+        if (isCodex)
+        {
+            // Store activation does not inherit this launcher's environment.
+            // Codex desktop and app-server load durable values from CODEX_HOME/.env.
+            KnownEditorProxySettings.WriteCodexDotEnv(profile);
+        }
+
+        if (isCodex || isClaude)
+        {
+            WritePackagedAppLaunchHelper(directory);
+        }
+        if (codexQqSkinStartScript is not null)
+        {
+            WriteCodexProxySkinHelper(directory);
+        }
+
         File.WriteAllText(
             scriptPath,
-            BuildScript(fullExecutablePath, profile, relayScriptPath, isAntigravity, isCodex, isClaude),
+            BuildScript(
+                fullExecutablePath,
+                profile,
+                relayScriptPath,
+                isAntigravity,
+                isCodex,
+                isClaude,
+                codexQqSkinStartScript),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.WriteAllText(
             hiddenLauncherPath,
@@ -136,12 +163,20 @@ internal static class ProxyLauncherScriptGenerator
         return MakeSafeFileName($"{displayName}Proxy.cmd");
     }
 
-    public static IReadOnlyList<string> CreateScriptsForInstalledApps(string proxyUri, string? outputDirectory = null)
+    public static IReadOnlyList<string> CreateScriptsForInstalledApps(
+        string proxyUri,
+        string? outputDirectory = null,
+        bool enableCodexQqSkin = false)
     {
         var scripts = new List<string>();
         foreach (var app in TargetApplicationCatalog.FindInstalled())
         {
-            scripts.Add(CreateScript(app.ExecutablePath, app.Name, proxyUri, outputDirectory));
+            scripts.Add(CreateScript(
+                app.ExecutablePath,
+                app.Name,
+                proxyUri,
+                outputDirectory,
+                enableCodexQqSkin));
         }
 
         return scripts;
@@ -153,7 +188,8 @@ internal static class ProxyLauncherScriptGenerator
         string? antigravityRelayScriptPath,
         bool includeAntigravityLanguageServerShim,
         bool resolveCodexAtLaunch,
-        bool resolveClaudeAtLaunch)
+        bool resolveClaudeAtLaunch,
+        string? codexQqSkinStartScript = null)
     {
         var chromiumProxyUri = resolveClaudeAtLaunch
             ? profile.HttpProxyUri
@@ -187,13 +223,206 @@ internal static class ProxyLauncherScriptGenerator
             targetExecutable = "%EASYPROXY_TARGET_EXE%";
         }
 
+        // Newer MSIX packages (Codex 26.707+) deny CreateProcess on the exe inside
+        // WindowsApps, so store-packaged targets go through the PowerShell helper
+        // that retries via package activation when the direct launch is denied.
+        string launchLine;
+        if (resolveCodexAtLaunch && !string.IsNullOrWhiteSpace(codexQqSkinStartScript))
+        {
+            launchLine = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{CodexProxySkinHelperFileName}\" "
+                + $"\"{targetExecutable}\" {EscapeCommandArgument(codexQqSkinStartScript)} {EscapeCommandArgument(chromiumProxyUri)}";
+        }
+        else
+        {
+            launchLine = resolveCodexAtLaunch || resolveClaudeAtLaunch
+                ? $"powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{PackagedAppLaunchHelperFileName}\" \"{targetExecutable}\" {joinedArguments}"
+                : $"start \"\" \"{targetExecutable}\" {joinedArguments}";
+        }
+
         return $"""
             @echo off
             setlocal
             {environmentLines}
             {preLaunchLines}
-            start "" "{targetExecutable}" {joinedArguments}
+            {launchLine}
             endlocal
+            """;
+    }
+
+    internal const string PackagedAppLaunchHelperFileName = "Start-PackagedApp.ps1";
+    internal const string CodexProxySkinHelperFileName = "Start-CodexProxySkin.ps1";
+
+    internal static string? GetCodexQqSkinStartScriptPath()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppData))
+        {
+            return null;
+        }
+
+        var path = Path.Combine(
+            localAppData,
+            "CodexQQSkin",
+            "engine",
+            "scripts",
+            "windows",
+            "start-qq-skin-windows.ps1");
+        return path;
+    }
+
+    internal static bool IsCodexQqSkinInstalled()
+    {
+        var path = GetCodexQqSkinStartScriptPath();
+        return path is not null && File.Exists(path);
+    }
+
+    internal static string WritePackagedAppLaunchHelper(string directory)
+    {
+        var path = Path.Combine(directory, PackagedAppLaunchHelperFileName);
+        File.WriteAllText(path, BuildPackagedAppLaunchHelperScript(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
+    }
+
+    internal static string WriteCodexProxySkinHelper(string directory)
+    {
+        var path = Path.Combine(directory, CodexProxySkinHelperFileName);
+        File.WriteAllText(
+            path,
+            BuildCodexProxySkinHelperScript(),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
+    }
+
+    internal static string BuildCodexProxySkinHelperScript()
+    {
+        return """
+            param(
+                [Parameter(Mandatory = $true, Position = 0)]
+                [string]$ExecutablePath,
+                [Parameter(Mandatory = $true, Position = 1)]
+                [string]$SkinStartScript,
+                [Parameter(Mandatory = $true, Position = 2)]
+                [string]$ProxyServer,
+                [int]$Port = 9341
+            )
+
+            $ErrorActionPreference = 'Stop'
+            $packagedAppLauncher = Join-Path $PSScriptRoot 'Start-PackagedApp.ps1'
+            $proxyOnlyArguments = @(
+                '--disable-quic',
+                "--proxy-server=$ProxyServer",
+                '--proxy-bypass-list=localhost;127.0.0.1;::1;<local>'
+            )
+            $skinScriptDirectory = Split-Path -Parent $SkinStartScript
+            $skinCommonScript = Join-Path $skinScriptDirectory 'common-windows.ps1'
+            if (-not (Test-Path -LiteralPath $SkinStartScript -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $skinCommonScript -PathType Leaf)) {
+                Write-Warning "Codex QQ Skin is unavailable; starting proxy-only Codex."
+                & $packagedAppLauncher $ExecutablePath @proxyOnlyArguments
+                exit $LASTEXITCODE
+            }
+
+            . $skinCommonScript
+            Initialize-StateRoot
+            Resolve-NodeRuntime | Out-Null
+            Resolve-CodexApp | Out-Null
+            Stop-RecordedInjector
+            Stop-CodexApp
+
+            $launchArguments = @(
+                '--disable-quic',
+                "--proxy-server=$ProxyServer",
+                '--proxy-bypass-list=localhost;127.0.0.1;::1;<local>',
+                '--remote-debugging-address=127.0.0.1',
+                "--remote-debugging-port=$Port"
+            )
+            & $packagedAppLauncher $ExecutablePath @launchArguments
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "The proxied Codex process could not be started."
+                exit $LASTEXITCODE
+            }
+
+            if (-not (Wait-CodexCdpEndpoint -Port $Port)) {
+                Write-Error "Codex did not expose its verified loopback CDP endpoint on port $Port."
+                exit 1
+            }
+
+            & $SkinStartScript -Port $Port -SkinMode 'qq'
+            exit $LASTEXITCODE
+            """;
+    }
+
+    internal static string BuildPackagedAppLaunchHelperScript()
+    {
+        return """
+            param(
+                [Parameter(Mandatory = $true, Position = 0)]
+                [string]$ExecutablePath,
+                [Parameter(ValueFromRemainingArguments = $true)]
+                [string[]]$Arguments
+            )
+
+            $argumentList = @($Arguments | Where-Object { $_ })
+
+            try {
+                if ($argumentList.Count -gt 0) {
+                    Start-Process -FilePath $ExecutablePath -ArgumentList $argumentList -ErrorAction Stop | Out-Null
+                } else {
+                    Start-Process -FilePath $ExecutablePath -ErrorAction Stop | Out-Null
+                }
+                exit 0
+            } catch {
+                # Some MSIX packages (e.g. OpenAI.Codex 26.707+) deny launching the exe
+                # directly from WindowsApps. Fall back to package activation, which still
+                # forwards the command-line arguments (proxy env vars are NOT inherited
+                # on this path; the Chromium --proxy-server argument carries the proxy).
+            }
+
+            $package = $null
+            $nameMatch = [regex]::Match($ExecutablePath, '\\WindowsApps\\(?<name>[^_\\]+)_')
+            if ($nameMatch.Success) {
+                $package = Get-AppxPackage -Name $nameMatch.Groups['name'].Value -ErrorAction SilentlyContinue |
+                    Sort-Object Version -Descending | Select-Object -First 1
+            }
+            if (-not $package) {
+                $package = Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {
+                    $_.InstallLocation -and $ExecutablePath.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
+                } | Select-Object -First 1
+            }
+            if (-not $package) {
+                Write-Error "No installed MSIX package contains: $ExecutablePath"
+                exit 1
+            }
+
+            $appId = 'App'
+            try {
+                $manifestApp = (Get-AppxPackageManifest -Package $package.PackageFullName).Package.Applications.Application | Select-Object -First 1
+                if ($manifestApp -and $manifestApp.Id) { $appId = $manifestApp.Id }
+            } catch {}
+
+            Add-Type -TypeDefinition @'
+            using System;
+            using System.Runtime.InteropServices;
+            namespace EasyProxy {
+                [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+                public interface IApplicationActivationManager {
+                    IntPtr ActivateApplication([In] string appUserModelId, [In] string arguments, [In] int options, [Out] out uint processId);
+                }
+                [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
+                public class ApplicationActivationManager {}
+                public static class PackagedAppLauncher {
+                    public static uint Launch(string appUserModelId, string arguments) {
+                        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+                        uint processId;
+                        manager.ActivateApplication(appUserModelId, arguments, 0, out processId);
+                        return processId;
+                    }
+                }
+            }
+            '@
+
+            $appUserModelId = "$($package.PackageFamilyName)!$appId"
+            [EasyProxy.PackagedAppLauncher]::Launch($appUserModelId, ($argumentList -join ' ')) | Out-Null
             """;
     }
 

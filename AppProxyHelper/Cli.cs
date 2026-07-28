@@ -114,17 +114,27 @@ public static class Cli
         var outputDirectory = GetOptionValue(args, "--output")
             ?? GetOptionValue(args, "--out");
         var appId = GetOptionValue(args, "--app") ?? "all";
+        var enableCodexQqSkin = HasOption(args, "--codex-qq-skin")
+            || (!HasOption(args, "--no-codex-qq-skin") && config?.EnableCodexQqSkin == true);
         var scripts = new List<string>();
 
         if (appId.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            scripts.AddRange(ProxyLauncherScriptGenerator.CreateScriptsForInstalledApps(proxyUri, outputDirectory));
+            scripts.AddRange(ProxyLauncherScriptGenerator.CreateScriptsForInstalledApps(
+                proxyUri,
+                outputDirectory,
+                enableCodexQqSkin));
         }
         else
         {
             var app = TargetApplicationCatalog.FindInstalledById(appId)
                 ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, codex, cursor, claude, antigravity。");
-            scripts.Add(ProxyLauncherScriptGenerator.CreateScript(app.ExecutablePath, app.Name, proxyUri, outputDirectory));
+            scripts.Add(ProxyLauncherScriptGenerator.CreateScript(
+                app.ExecutablePath,
+                app.Name,
+                proxyUri,
+                outputDirectory,
+                enableCodexQqSkin));
         }
 
         var targetPath = GetOptionValue(args, "--target") ?? config?.TargetPath;
@@ -136,7 +146,12 @@ public static class Cli
             if (!alreadyCreated)
             {
                 var displayName = GetOptionValue(args, "--name") ?? TargetApplicationCatalog.GuessNameFromPath(fullTargetPath);
-                scripts.Add(ProxyLauncherScriptGenerator.CreateScript(fullTargetPath, displayName, proxyUri, outputDirectory));
+                scripts.Add(ProxyLauncherScriptGenerator.CreateScript(
+                    fullTargetPath,
+                    displayName,
+                    proxyUri,
+                    outputDirectory,
+                    enableCodexQqSkin));
             }
         }
 
@@ -182,6 +197,11 @@ public static class Cli
         return null;
     }
 
+    private static bool HasOption(string[] args, string optionName)
+    {
+        return args.Any(argument => string.Equals(argument, optionName, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static bool IsHelp(string value)
     {
         return value is "-h" or "--help" or "help" or "/?";
@@ -205,7 +225,7 @@ public static class Cli
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
               EasyProxy run --config app-proxy.json
-              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|claude|antigravity|antigravity-ide] [--out DIR]
+              EasyProxy scripts [--config app-proxy.json] [--app all|codex|cursor|claude|antigravity|antigravity-ide] [--codex-qq-skin|--no-codex-qq-skin] [--out DIR]
               EasyProxy ui [--config app-proxy.json]
 
             说明:

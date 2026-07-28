@@ -139,4 +139,26 @@ EasyProxy ui --config app-proxy.json
 .\build-setup.bat
 ```
 
+## Codex QQ Skin
+
+GUI 的“AI 应用代理生成”区域提供独立的 `Codex 启用 QQ Skin` 勾选项。该选项写入
+`app-proxy.json` 的 `enableCodexQqSkin` 字段：
+
+```json
+{
+  "enableCodexQqSkin": true
+}
+```
+
+启用后，`Codex-Proxy` 会在同一次启动中注入代理参数与本机 CDP 参数，等待 CDP
+端点可用后再调用已安装的 Codex QQ Skin。QQ Skin 未安装或安装目录被移除时，
+启动器会自动回退为仅代理模式，不阻止 Codex 启动。
+
+命令行也可显式控制：
+
+```powershell
+EasyProxy scripts --app codex --proxy socks5://127.0.0.1:7890 --codex-qq-skin
+EasyProxy scripts --app codex --proxy socks5://127.0.0.1:7890 --no-codex-qq-skin
+```
+
 发布目录只包含 EasyProxy 主程序和示例配置，不再包含 WinDivert 驱动文件。

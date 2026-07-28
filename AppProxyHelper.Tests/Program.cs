@@ -10,6 +10,10 @@ internal static class Program
             ("catalog exposes claude and codex CLI tools", CatalogExposesClaudeAndCodex),
             ("launcher script injects proxy environment and starts terminal", LauncherScriptInjectsProxyEnvironment),
             ("codex launcher script keeps all proxy environment", CodexLauncherScriptKeepsAllProxyEnvironment),
+            ("codex dotenv preserves unrelated values and replaces proxy values", CodexDotEnvPreservesUnrelatedValues),
+            ("config persists Codex QQ skin preference", ConfigPersistsCodexQqSkinPreference),
+            ("Codex QQ skin preference survives temporary uninstall", CodexQqSkinPreferenceSurvivesTemporaryUninstall),
+            ("codex desktop launcher combines proxy and QQ skin", CodexDesktopLauncherCombinesProxyAndQqSkin),
             ("claude desktop launcher uses http proxy argument", ClaudeDesktopLauncherUsesHttpProxyArgument),
             ("claude code settings receive http proxy env", ClaudeCodeSettingsReceiveHttpProxyEnv),
             ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens)
@@ -81,6 +85,93 @@ internal static class Program
         AssertContains(script, "wt.exe -d \"%EASYPROXY_WORKDIR%\" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -Command \"codex\"");
     }
 
+    private static void CodexDotEnvPreservesUnrelatedValues()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var dotEnvPath = Path.Combine(tempDirectory, ".env");
+            File.WriteAllText(dotEnvPath, "KEEP_ME=1\nexport HTTP_PROXY=\"http://old-proxy:8080\"\nall_proxy=socks5://old-proxy:1080\nHTTPS PROXY=http://invalid-proxy:8080\n");
+
+            KnownEditorProxySettings.WriteCodexDotEnv(
+                dotEnvPath,
+                ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890"));
+
+            var dotEnv = File.ReadAllText(dotEnvPath);
+            AssertContains(dotEnv, "KEEP_ME=1");
+            AssertContains(dotEnv, "HTTP_PROXY=\"http://127.0.0.1:7890\"");
+            AssertContains(dotEnv, "HTTPS_PROXY=\"http://127.0.0.1:7890\"");
+            AssertContains(dotEnv, "ALL_PROXY=\"socks5://127.0.0.1:7890\"");
+            AssertContains(dotEnv, "all_proxy=\"socks5://127.0.0.1:7890\"");
+            AssertDoesNotContain(dotEnv, "old-proxy");
+            AssertDoesNotContain(dotEnv, "invalid-proxy");
+        });
+    }
+
+    private static void CodexDesktopLauncherCombinesProxyAndQqSkin()
+    {
+        var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
+        var skinStartScript = @"C:\Users\me\AppData\Local\CodexQQSkin\engine\scripts\windows\start-qq-skin-windows.ps1";
+        var launcher = ProxyLauncherScriptGenerator.BuildScript(
+            @"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__test\app\ChatGPT.exe",
+            profile,
+            antigravityRelayScriptPath: null,
+            includeAntigravityLanguageServerShim: false,
+            resolveCodexAtLaunch: true,
+            resolveClaudeAtLaunch: false,
+            codexQqSkinStartScript: skinStartScript);
+        var helper = ProxyLauncherScriptGenerator.BuildCodexProxySkinHelperScript();
+        var proxyOnlyLauncher = ProxyLauncherScriptGenerator.BuildScript(
+            @"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__test\app\ChatGPT.exe",
+            profile,
+            antigravityRelayScriptPath: null,
+            includeAntigravityLanguageServerShim: false,
+            resolveCodexAtLaunch: true,
+            resolveClaudeAtLaunch: false,
+            codexQqSkinStartScript: null);
+
+        AssertContains(launcher, ProxyLauncherScriptGenerator.CodexProxySkinHelperFileName);
+        AssertContains(launcher, skinStartScript);
+        AssertDoesNotContain(proxyOnlyLauncher, ProxyLauncherScriptGenerator.CodexProxySkinHelperFileName);
+        AssertContains(helper, "--proxy-server=$ProxyServer");
+        AssertContains(helper, "--remote-debugging-address=127.0.0.1");
+        AssertContains(helper, "--remote-debugging-port=$Port");
+        AssertContains(helper, "Wait-CodexCdpEndpoint -Port $Port");
+        AssertContains(helper, "& $SkinStartScript -Port $Port -SkinMode 'qq'");
+        AssertContains(helper, "Codex QQ Skin is unavailable; starting proxy-only Codex.");
+        AssertContains(helper, "& $packagedAppLauncher $ExecutablePath @proxyOnlyArguments");
+    }
+
+    private static void ConfigPersistsCodexQqSkinPreference()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var configPath = Path.Combine(tempDirectory, "app-proxy.json");
+            ConfigLoader.Save(configPath, new AppProxyConfig
+            {
+                ProxyUri = "socks5://127.0.0.1:7890",
+                EnableCodexQqSkin = true
+            });
+
+            var loaded = ConfigLoader.Load(configPath).Value;
+            AssertEqual(true, loaded.EnableCodexQqSkin, "Codex QQ Skin preference");
+            AssertContains(File.ReadAllText(configPath), "\"enableCodexQqSkin\": true");
+        });
+    }
+
+    private static void CodexQqSkinPreferenceSurvivesTemporaryUninstall()
+    {
+        var state = AppProxyGuiForm.ResolveCodexQqSkinOptionState(
+            configuredPreference: true,
+            skinInstalled: false,
+            codexAvailable: true,
+            codexSelected: true);
+
+        AssertEqual(true, state.Checked, "stored preference remains checked");
+        AssertEqual(true, state.Enabled, "option remains editable before reinstall");
+        AssertContains(state.Text, "未安装");
+        AssertContains(state.Text, "仅代理");
+    }
+
     private static void ClaudeDesktopLauncherUsesHttpProxyArgument()
     {
         var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
@@ -100,9 +191,7 @@ internal static class Program
 
     private static void ClaudeCodeSettingsReceiveHttpProxyEnv()
     {
-        var tempDirectory = Path.Combine(Path.GetTempPath(), "EasyProxyTests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDirectory);
-        try
+        WithTempDirectory(tempDirectory =>
         {
             var settingsPath = Path.Combine(tempDirectory, "settings.json");
             File.WriteAllText(settingsPath, """
@@ -129,14 +218,7 @@ internal static class Program
             AssertEqual(false, env.ContainsKey("ALL_PROXY"), "ALL_PROXY removed");
             AssertEqual(false, env.ContainsKey("all_proxy"), "all_proxy removed");
             AssertEqual(false, env.ContainsKey("CLOUDSDK_PROXY_TYPE"), "CLOUDSDK_PROXY_TYPE removed");
-        }
-        finally
-        {
-            if (Directory.Exists(tempDirectory))
-            {
-                Directory.Delete(tempDirectory, recursive: true);
-            }
-        }
+        });
     }
 
     private static void ContextMenuCommandsPassExplorerDirectoryTokens()
@@ -151,6 +233,23 @@ internal static class Program
         AssertContains(commandForBackground, "\"%V\"");
         AssertContains(commandForDirectory, "\"%1\"");
         AssertContains(commandForBackground, "cmd.exe /d /c");
+    }
+
+    private static void WithTempDirectory(Action<string> body)
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), "EasyProxyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        try
+        {
+            body(tempDirectory);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

@@ -15,6 +15,7 @@
   "waitForExit": true,
   "runDiagnosticsBeforeLaunch": true,
   "abortLaunchWhenDiagnosticsFail": false,
+  "enableCodexQqSkin": false,
   "noProxy": [
     "localhost",
     "127.0.0.1",

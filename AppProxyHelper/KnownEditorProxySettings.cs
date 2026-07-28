@@ -1,10 +1,25 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 
 namespace AppProxyHelper;
 
 internal static class KnownEditorProxySettings
 {
+    private static readonly HashSet<string> CodexProxyEnvironmentVariableNames = new(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "GRPC_PROXY",
+        "NO_PROXY",
+        "NO_GRPC_PROXY",
+        "CLOUDSDK_PROXY_TYPE",
+        "CLOUDSDK_PROXY_ADDRESS",
+        "CLOUDSDK_PROXY_PORT"
+    };
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
@@ -42,6 +57,96 @@ internal static class KnownEditorProxySettings
         }
 
         return writtenSettingsPaths;
+    }
+
+    public static string? WriteCodexDotEnv(ProxyEnvironmentProfile profile)
+    {
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (string.IsNullOrWhiteSpace(codexHome))
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrWhiteSpace(userProfile))
+            {
+                return null;
+            }
+
+            codexHome = Path.Combine(userProfile, ".codex");
+        }
+
+        var dotEnvPath = Path.Combine(Path.GetFullPath(codexHome), ".env");
+        WriteCodexDotEnv(dotEnvPath, profile);
+        return dotEnvPath;
+    }
+
+    internal static void WriteCodexDotEnv(string dotEnvPath, ProxyEnvironmentProfile profile)
+    {
+        var directory = Path.GetDirectoryName(dotEnvPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var retainedLines = File.Exists(dotEnvPath)
+            ? File.ReadAllLines(dotEnvPath)
+                .Where(static line => !IsCodexProxyEnvironmentLine(line))
+                .ToList()
+            : new List<string>();
+        while (retainedLines.Count > 0 && string.IsNullOrWhiteSpace(retainedLines[^1]))
+        {
+            retainedLines.RemoveAt(retainedLines.Count - 1);
+        }
+
+        if (retainedLines.Count > 0)
+        {
+            retainedLines.Add(string.Empty);
+        }
+
+        retainedLines.Add("# Managed by EasyProxy for the Codex desktop app.");
+        retainedLines.AddRange(profile.GetEnvironmentVariables().Select(
+            static pair => pair.Key + "=" + EscapeDotEnvValue(pair.Value)));
+        File.WriteAllLines(
+            dotEnvPath,
+            retainedLines,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
+
+    private static bool IsCodexProxyEnvironmentLine(string line)
+    {
+        var trimmed = line.TrimStart();
+        if (trimmed.Equals("# Managed by EasyProxy for the Codex desktop app.", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (trimmed.StartsWith("export ", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[7..].TrimStart();
+        }
+
+        var equalsIndex = trimmed.IndexOf('=');
+        if (equalsIndex <= 0)
+        {
+            return false;
+        }
+
+        var name = trimmed[..equalsIndex].Trim();
+        if (CodexProxyEnvironmentVariableNames.Contains(name))
+        {
+            return true;
+        }
+
+        // Clean up invalid proxy keys written by older/manual configurations,
+        // such as "HTTP PROXY=...", before appending valid dotenv entries.
+        return CodexProxyEnvironmentVariableNames.Contains(name.Replace(' ', '_'));
+    }
+
+    private static string EscapeDotEnvValue(string value)
+    {
+        return "\"" + value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
     }
 
     private static IEnumerable<string> GetSettingsPaths(string executablePath)
