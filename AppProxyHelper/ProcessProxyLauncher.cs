@@ -190,7 +190,7 @@ public sealed class ProcessProxyLauncher
         {
             _logger.Warn(
                 "当前 targetPath 位于 WindowsApps，EasyProxy 会直接以 exe 方式启动目标程序。" +
-                "部分 MSIX/Store 应用可能缺少正常应用激活上下文；如果目标日志出现 helper paths unavailable，建议优先使用 EasyProxy 识别到的 Codex/Cursor/Claude/Antigravity 安装路径，或改用非 Store 版本。");
+                "部分 MSIX/Store 应用可能缺少正常应用激活上下文；如果目标日志出现 helper paths unavailable，建议优先使用 EasyProxy 识别到的 ChatGPT/Cursor/Claude/Antigravity 安装路径，或改用非 Store 版本。");
         }
     }
 

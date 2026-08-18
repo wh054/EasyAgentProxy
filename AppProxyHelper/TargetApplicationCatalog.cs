@@ -10,7 +10,7 @@ internal static class TargetApplicationCatalog
     public static IReadOnlyList<TargetApplicationPreset> FindInstalled()
     {
         var presets = new List<TargetApplicationPreset>();
-        AddTargetPreset(presets, "codex", "ChatGPT (Codex) 应用", GetCodexCandidates());
+        AddTargetPreset(presets, "chatgpt", "ChatGPT 应用", GetChatGptCandidates());
         AddTargetPreset(presets, "cursor", "Cursor 应用", GetCursorCandidates());
         AddTargetPreset(presets, "claude", "Claude 应用", GetClaudeCandidates());
         AddTargetPreset(presets, "antigravity", "Antigravity 应用", GetAntigravityCandidates());
@@ -20,6 +20,11 @@ internal static class TargetApplicationCatalog
 
     public static TargetApplicationPreset? FindInstalledById(string id)
     {
+        if (id.Equals("codex", StringComparison.OrdinalIgnoreCase))
+        {
+            id = "chatgpt";
+        }
+
         return FindInstalled()
             .FirstOrDefault(app => app.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
     }
@@ -84,10 +89,10 @@ internal static class TargetApplicationCatalog
         return null;
     }
 
-    private static IEnumerable<string> GetCodexCandidates()
+    private static IEnumerable<string> GetChatGptCandidates()
     {
-        // OpenAI renamed the Codex desktop app's entry point to ChatGPT.exe;
-        // prefer it, but keep the old Codex.exe candidates as a fallback for
+        // The ChatGPT desktop app still uses the OpenAI.Codex package identity.
+        // Prefer ChatGPT.exe, but keep Codex.exe candidates as a compatibility fallback for
         // installs that haven't updated yet.
         foreach (var fileName in new[] { "ChatGPT.exe", "Codex.exe" })
         {

@@ -1,6 +1,6 @@
 {
   "mode": "Environment",
-  "targetPath": "C:\\Path\\To\\Codex.exe",
+  "targetPath": "C:\\Path\\To\\ChatGPT.exe",
   "targetArguments": [
     "--disable-quic",
     "--proxy-server=socks5://127.0.0.1:7890",
@@ -15,7 +15,6 @@
   "waitForExit": true,
   "runDiagnosticsBeforeLaunch": true,
   "abortLaunchWhenDiagnosticsFail": false,
-  "enableCodexQqSkin": false,
   "noProxy": [
     "localhost",
     "127.0.0.1",

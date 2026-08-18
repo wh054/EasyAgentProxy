@@ -19,7 +19,6 @@ public sealed class AppProxyConfig
     public bool WaitForExit { get; set; } = true;
     public bool RunDiagnosticsBeforeLaunch { get; set; } = true;
     public bool AbortLaunchWhenDiagnosticsFail { get; set; }
-    public bool EnableCodexQqSkin { get; set; }
     public string[] NoProxy { get; set; } = { "localhost", "127.0.0.1", "::1" };
     public DiagnosticsConfig Diagnostics { get; set; } = new();
 

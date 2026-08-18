@@ -14,12 +14,12 @@ internal static class ProxyLauncherScriptGenerator
             : Path.Combine(localAppData, "EasyProxy", "Launchers");
     }
 
-    public static string CreateScript(
+    public static IReadOnlyList<string> CreateScripts(
         string executablePath,
         string displayName,
         string proxyUri,
         string? outputDirectory = null,
-        bool enableCodexQqSkin = false)
+        bool createShortcuts = true)
     {
         if (string.IsNullOrWhiteSpace(executablePath))
         {
@@ -45,9 +45,6 @@ internal static class ProxyLauncherScriptGenerator
 
         var isAntigravity = AntigravityCloudCodeRelay.IsAntigravityExecutable(fullExecutablePath);
         var usesAntigravityRelay = AntigravityCloudCodeRelay.UsesCloudCodeRelay(fullExecutablePath);
-        var safeName = GetLauncherScriptName(fullExecutablePath, displayName);
-        var scriptPath = Path.Combine(directory, safeName);
-        var hiddenLauncherPath = Path.ChangeExtension(scriptPath, ".vbs");
         var antigravityRelayUrl = usesAntigravityRelay
             ? AntigravityCloudCodeRelay.RelayUrl
             : null;
@@ -71,50 +68,75 @@ internal static class ProxyLauncherScriptGenerator
             }
         }
 
-        var isCodex = IsCodexExecutable(fullExecutablePath, displayName);
+        var isChatGpt = IsChatGptExecutable(fullExecutablePath, displayName);
         var isClaude = IsClaudeExecutable(fullExecutablePath, displayName);
-        var codexQqSkinStartScript = isCodex && enableCodexQqSkin
-            ? GetCodexQqSkinStartScriptPath()
-            : null;
-        if (isCodex)
+        if (isChatGpt)
         {
             // Store activation does not inherit this launcher's environment.
-            // Codex desktop and app-server load durable values from CODEX_HOME/.env.
+            // ChatGPT desktop and its app-server load durable values from CODEX_HOME/.env.
             KnownEditorProxySettings.WriteCodexDotEnv(profile);
         }
 
-        if (isCodex || isClaude)
+        if (isChatGpt || isClaude)
         {
             WritePackagedAppLaunchHelper(directory);
         }
-        if (codexQqSkinStartScript is not null)
+
+        var scripts = new List<string>();
+        var proxyScriptPath = WriteLauncherVariant(
+            directory,
+            GetLauncherScriptName(fullExecutablePath, displayName),
+            fullExecutablePath,
+            profile,
+            relayScriptPath,
+            isAntigravity,
+            isChatGpt,
+            isClaude);
+        scripts.Add(proxyScriptPath);
+        if (createShortcuts)
         {
-            WriteCodexProxySkinHelper(directory);
+            PointShortcutsToScript(
+                fullExecutablePath,
+                displayName,
+                Path.ChangeExtension(proxyScriptPath, ".vbs"));
         }
 
+        RemoveLegacyCodexLauncher(directory, createShortcuts);
+        return scripts;
+    }
+
+    private static string WriteLauncherVariant(
+        string directory,
+        string scriptName,
+        string executablePath,
+        ProxyEnvironmentProfile profile,
+        string? antigravityRelayScriptPath,
+        bool includeAntigravityLanguageServerShim,
+        bool resolveChatGptAtLaunch,
+        bool resolveClaudeAtLaunch)
+    {
+        var scriptPath = Path.Combine(directory, scriptName);
+        var hiddenLauncherPath = Path.ChangeExtension(scriptPath, ".vbs");
         File.WriteAllText(
             scriptPath,
             BuildScript(
-                fullExecutablePath,
+                executablePath,
                 profile,
-                relayScriptPath,
-                isAntigravity,
-                isCodex,
-                isClaude,
-                codexQqSkinStartScript),
+                antigravityRelayScriptPath,
+                includeAntigravityLanguageServerShim,
+                resolveChatGptAtLaunch,
+                resolveClaudeAtLaunch),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.WriteAllText(
             hiddenLauncherPath,
             BuildHiddenLauncherScript(scriptPath),
             Encoding.ASCII);
-        PointShortcutsToScript(fullExecutablePath, displayName, hiddenLauncherPath);
-
         return scriptPath;
     }
 
     private static string GetDefaultOutputDirectory(string executablePath, string displayName)
     {
-        if ((IsCodexExecutable(executablePath, displayName) || IsClaudeExecutable(executablePath, displayName))
+        if ((IsChatGptExecutable(executablePath, displayName) || IsClaudeExecutable(executablePath, displayName))
             && TryGetWindowsAppPackageLocalCache(executablePath, out var appDirectory))
         {
             return Path.Combine(appDirectory, "EasyProxy");
@@ -150,9 +172,9 @@ internal static class ProxyLauncherScriptGenerator
             return "CursorProxy.cmd";
         }
 
-        if (IsCodexExecutable(executablePath, displayName))
+        if (IsChatGptExecutable(executablePath, displayName))
         {
-            return "CodexProxy.cmd";
+            return "ChatGPTProxy.cmd";
         }
 
         if (IsClaudeExecutable(executablePath, displayName))
@@ -165,18 +187,16 @@ internal static class ProxyLauncherScriptGenerator
 
     public static IReadOnlyList<string> CreateScriptsForInstalledApps(
         string proxyUri,
-        string? outputDirectory = null,
-        bool enableCodexQqSkin = false)
+        string? outputDirectory = null)
     {
         var scripts = new List<string>();
         foreach (var app in TargetApplicationCatalog.FindInstalled())
         {
-            scripts.Add(CreateScript(
+            scripts.AddRange(CreateScripts(
                 app.ExecutablePath,
                 app.Name,
                 proxyUri,
-                outputDirectory,
-                enableCodexQqSkin));
+                outputDirectory));
         }
 
         return scripts;
@@ -187,9 +207,8 @@ internal static class ProxyLauncherScriptGenerator
         ProxyEnvironmentProfile profile,
         string? antigravityRelayScriptPath,
         bool includeAntigravityLanguageServerShim,
-        bool resolveCodexAtLaunch,
-        bool resolveClaudeAtLaunch,
-        string? codexQqSkinStartScript = null)
+        bool resolveChatGptAtLaunch,
+        bool resolveClaudeAtLaunch)
     {
         var chromiumProxyUri = resolveClaudeAtLaunch
             ? profile.HttpProxyUri
@@ -212,9 +231,9 @@ internal static class ProxyLauncherScriptGenerator
                 profile.HttpProxyUri,
                 includeAntigravityLanguageServerShim);
         var targetExecutable = EscapePath(executablePath);
-        if (resolveCodexAtLaunch)
+        if (resolveChatGptAtLaunch)
         {
-            preLaunchLines = BuildCodexDbHubLaunchLine() + BuildCodexAppxResolutionLines(executablePath) + preLaunchLines;
+            preLaunchLines = BuildChatGptDbHubLaunchLine() + BuildChatGptAppxResolutionLines(executablePath) + preLaunchLines;
             targetExecutable = "%EASYPROXY_TARGET_EXE%";
         }
         else if (resolveClaudeAtLaunch)
@@ -223,21 +242,12 @@ internal static class ProxyLauncherScriptGenerator
             targetExecutable = "%EASYPROXY_TARGET_EXE%";
         }
 
-        // Newer MSIX packages (Codex 26.707+) deny CreateProcess on the exe inside
+        // Newer ChatGPT MSIX packages deny CreateProcess on the exe inside
         // WindowsApps, so store-packaged targets go through the PowerShell helper
         // that retries via package activation when the direct launch is denied.
-        string launchLine;
-        if (resolveCodexAtLaunch && !string.IsNullOrWhiteSpace(codexQqSkinStartScript))
-        {
-            launchLine = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{CodexProxySkinHelperFileName}\" "
-                + $"\"{targetExecutable}\" {EscapeCommandArgument(codexQqSkinStartScript)} {EscapeCommandArgument(chromiumProxyUri)}";
-        }
-        else
-        {
-            launchLine = resolveCodexAtLaunch || resolveClaudeAtLaunch
-                ? $"powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{PackagedAppLaunchHelperFileName}\" \"{targetExecutable}\" {joinedArguments}"
-                : $"start \"\" \"{targetExecutable}\" {joinedArguments}";
-        }
+        var launchLine = resolveChatGptAtLaunch || resolveClaudeAtLaunch
+            ? $"powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{PackagedAppLaunchHelperFileName}\" \"{targetExecutable}\" {joinedArguments}"
+            : $"start \"\" \"{targetExecutable}\" {joinedArguments}";
 
         return $"""
             @echo off
@@ -250,106 +260,12 @@ internal static class ProxyLauncherScriptGenerator
     }
 
     internal const string PackagedAppLaunchHelperFileName = "Start-PackagedApp.ps1";
-    internal const string CodexProxySkinHelperFileName = "Start-CodexProxySkin.ps1";
-
-    internal static string? GetCodexQqSkinStartScriptPath()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrWhiteSpace(localAppData))
-        {
-            return null;
-        }
-
-        var path = Path.Combine(
-            localAppData,
-            "CodexQQSkin",
-            "engine",
-            "scripts",
-            "windows",
-            "start-qq-skin-windows.ps1");
-        return path;
-    }
-
-    internal static bool IsCodexQqSkinInstalled()
-    {
-        var path = GetCodexQqSkinStartScriptPath();
-        return path is not null && File.Exists(path);
-    }
 
     internal static string WritePackagedAppLaunchHelper(string directory)
     {
         var path = Path.Combine(directory, PackagedAppLaunchHelperFileName);
         File.WriteAllText(path, BuildPackagedAppLaunchHelperScript(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return path;
-    }
-
-    internal static string WriteCodexProxySkinHelper(string directory)
-    {
-        var path = Path.Combine(directory, CodexProxySkinHelperFileName);
-        File.WriteAllText(
-            path,
-            BuildCodexProxySkinHelperScript(),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        return path;
-    }
-
-    internal static string BuildCodexProxySkinHelperScript()
-    {
-        return """
-            param(
-                [Parameter(Mandatory = $true, Position = 0)]
-                [string]$ExecutablePath,
-                [Parameter(Mandatory = $true, Position = 1)]
-                [string]$SkinStartScript,
-                [Parameter(Mandatory = $true, Position = 2)]
-                [string]$ProxyServer,
-                [int]$Port = 9341
-            )
-
-            $ErrorActionPreference = 'Stop'
-            $packagedAppLauncher = Join-Path $PSScriptRoot 'Start-PackagedApp.ps1'
-            $proxyOnlyArguments = @(
-                '--disable-quic',
-                "--proxy-server=$ProxyServer",
-                '--proxy-bypass-list=localhost;127.0.0.1;::1;<local>'
-            )
-            $skinScriptDirectory = Split-Path -Parent $SkinStartScript
-            $skinCommonScript = Join-Path $skinScriptDirectory 'common-windows.ps1'
-            if (-not (Test-Path -LiteralPath $SkinStartScript -PathType Leaf) -or
-                -not (Test-Path -LiteralPath $skinCommonScript -PathType Leaf)) {
-                Write-Warning "Codex QQ Skin is unavailable; starting proxy-only Codex."
-                & $packagedAppLauncher $ExecutablePath @proxyOnlyArguments
-                exit $LASTEXITCODE
-            }
-
-            . $skinCommonScript
-            Initialize-StateRoot
-            Resolve-NodeRuntime | Out-Null
-            Resolve-CodexApp | Out-Null
-            Stop-RecordedInjector
-            Stop-CodexApp
-
-            $launchArguments = @(
-                '--disable-quic',
-                "--proxy-server=$ProxyServer",
-                '--proxy-bypass-list=localhost;127.0.0.1;::1;<local>',
-                '--remote-debugging-address=127.0.0.1',
-                "--remote-debugging-port=$Port"
-            )
-            & $packagedAppLauncher $ExecutablePath @launchArguments
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "The proxied Codex process could not be started."
-                exit $LASTEXITCODE
-            }
-
-            if (-not (Wait-CodexCdpEndpoint -Port $Port)) {
-                Write-Error "Codex did not expose its verified loopback CDP endpoint on port $Port."
-                exit 1
-            }
-
-            & $SkinStartScript -Port $Port -SkinMode 'qq'
-            exit $LASTEXITCODE
-            """;
     }
 
     internal static string BuildPackagedAppLaunchHelperScript()
@@ -449,7 +365,7 @@ internal static class ProxyLauncherScriptGenerator
             + Environment.NewLine;
     }
 
-    private static string BuildCodexAppxResolutionLines(string fallbackExecutablePath)
+    private static string BuildChatGptAppxResolutionLines(string fallbackExecutablePath)
     {
         var escapedFallback = EscapeSetValue(fallbackExecutablePath);
         return "set \"EASYPROXY_TARGET_EXE=" + escapedFallback + "\"" + Environment.NewLine
@@ -457,17 +373,17 @@ internal static class ProxyLauncherScriptGenerator
             + "$pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descending | Select-Object -First 1; "
             + "if ($pkg) { "
             + "$chatgpt = Join-Path $pkg.InstallLocation 'app\\ChatGPT.exe'; "
-            + "$codex = Join-Path $pkg.InstallLocation 'app\\Codex.exe'; "
-            + "if (Test-Path $chatgpt) { $chatgpt } elseif (Test-Path $codex) { $codex } "
+            + "$legacyExecutable = Join-Path $pkg.InstallLocation 'app\\Codex.exe'; "
+            + "if (Test-Path $chatgpt) { $chatgpt } elseif (Test-Path $legacyExecutable) { $legacyExecutable } "
             + "}\"`) do set \"EASYPROXY_TARGET_EXE=%%I\"" + Environment.NewLine
             + "if not exist \"%EASYPROXY_TARGET_EXE%\" (" + Environment.NewLine
-            + "  echo ChatGPT.exe/Codex.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
+            + "  echo ChatGPT.exe was not found: %EASYPROXY_TARGET_EXE%" + Environment.NewLine
             + "  pause" + Environment.NewLine
             + "  exit /b 1" + Environment.NewLine
             + ")" + Environment.NewLine;
     }
 
-    private static string BuildCodexDbHubLaunchLine()
+    private static string BuildChatGptDbHubLaunchLine()
     {
         var scriptPath = @"D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat";
         return "if exist \"" + EscapePath(scriptPath) + "\" call \"" + EscapePath(scriptPath) + "\" >nul 2>nul"
@@ -578,7 +494,10 @@ internal static class ProxyLauncherScriptGenerator
         return builder.ToString();
     }
 
-    private static void PointShortcutsToScript(string executablePath, string displayName, string scriptPath)
+    private static void PointShortcutsToScript(
+        string executablePath,
+        string displayName,
+        string scriptPath)
     {
         var shortcutName = GetShortcutName(executablePath, displayName);
         if (string.IsNullOrWhiteSpace(shortcutName))
@@ -588,6 +507,9 @@ internal static class ProxyLauncherScriptGenerator
 
         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+        var interactiveLocalAppData = FindInteractiveLocalAppData(desktop);
+        var shortcutTargetPath = RebaseLocalAppDataPath(scriptPath, interactiveLocalAppData);
+        var workingDirectory = Path.GetDirectoryName(shortcutTargetPath) ?? "";
         foreach (var shortcutPath in new[]
         {
             string.IsNullOrWhiteSpace(desktop) ? null : Path.Combine(desktop, shortcutName),
@@ -599,7 +521,7 @@ internal static class ProxyLauncherScriptGenerator
                 continue;
             }
 
-            TryWriteShortcut(shortcutPath, scriptPath, Path.GetDirectoryName(scriptPath) ?? "", executablePath + ",0");
+            TryWriteShortcut(shortcutPath, shortcutTargetPath, workingDirectory, executablePath + ",0");
         }
     }
 
@@ -620,9 +542,9 @@ internal static class ProxyLauncherScriptGenerator
             return "Cursor-Proxy.lnk";
         }
 
-        if (IsCodexExecutable(executablePath, displayName))
+        if (IsChatGptExecutable(executablePath, displayName))
         {
-            return "Codex-Proxy.lnk";
+            return "ChatGPT-Proxy.lnk";
         }
 
         if (IsClaudeExecutable(executablePath, displayName))
@@ -633,6 +555,94 @@ internal static class ProxyLauncherScriptGenerator
         return string.IsNullOrWhiteSpace(displayName)
             ? null
             : MakeSafeFileName(displayName + "-Proxy") + ".lnk";
+    }
+
+    internal static string RebaseLocalAppDataPath(string path, string? interactiveLocalAppData)
+    {
+        if (string.IsNullOrWhiteSpace(interactiveLocalAppData))
+        {
+            return path;
+        }
+
+        var marker = Path.DirectorySeparatorChar + Path.Combine("AppData", "Local") + Path.DirectorySeparatorChar;
+        var markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return path;
+        }
+
+        var suffix = path[(markerIndex + marker.Length)..];
+        return Path.Combine(interactiveLocalAppData, suffix);
+    }
+
+    private static string? FindInteractiveLocalAppData(string desktopDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(desktopDirectory))
+        {
+            return null;
+        }
+
+        DirectoryInfo? directory;
+        try
+        {
+            directory = new DirectoryInfo(desktopDirectory);
+        }
+        catch
+        {
+            return null;
+        }
+
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "AppData", "Local");
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+
+    private static void RemoveLegacyCodexLauncher(string directory, bool removeShortcuts)
+    {
+        TryDeleteGeneratedFile(Path.Combine(directory, "CodexProxy.cmd"));
+        TryDeleteGeneratedFile(Path.Combine(directory, "CodexProxy.vbs"));
+        TryDeleteGeneratedFile(Path.Combine(directory, "Start-CodexProxySkin.ps1"));
+        if (removeShortcuts)
+        {
+            RemoveShortcuts("Codex-Proxy.lnk");
+        }
+    }
+
+    private static void RemoveShortcuts(string shortcutName)
+    {
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+        foreach (var directory in new[] { desktop, programs })
+        {
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                TryDeleteGeneratedFile(Path.Combine(directory, shortcutName));
+            }
+        }
+    }
+
+    private static void TryDeleteGeneratedFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort; generating the current launchers still succeeds.
+        }
     }
 
     private static bool IsCursorExecutable(string executablePath, string displayName)
@@ -647,12 +657,13 @@ internal static class ProxyLauncherScriptGenerator
             || displayName.Contains("Antigravity IDE", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsCodexExecutable(string executablePath, string displayName)
+    private static bool IsChatGptExecutable(string executablePath, string displayName)
     {
         var fileName = Path.GetFileNameWithoutExtension(executablePath);
         return fileName.Equals("Codex", StringComparison.OrdinalIgnoreCase)
             || fileName.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase)
             || executablePath.Contains("OpenAI.Codex", StringComparison.OrdinalIgnoreCase)
+            || displayName.Contains("ChatGPT", StringComparison.OrdinalIgnoreCase)
             || displayName.Contains("Codex", StringComparison.OrdinalIgnoreCase);
     }
 

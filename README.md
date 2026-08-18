@@ -6,12 +6,12 @@ EasyProxy 是面向桌面 AI 应用的代理启动器，当前默认方案是 `E
 
 | 应用 | 入口 | 代理方式 |
 | --- | --- | --- |
-| Codex | `Codex-Proxy` | Chromium 参数 + 环境变量 |
+| ChatGPT | `ChatGPT-Proxy` | Chromium 参数 + 环境变量 |
 | Cursor | `Cursor-Proxy` | Chromium 参数 + 环境变量 + VS Code 风格 settings |
 | Antigravity | `Antigravity-Proxy` | Chromium 参数 + 环境变量 + CloudCode relay + language server shim |
 | Antigravity IDE | `Antigravity IDE-Proxy` | Chromium 参数 + 环境变量 + CloudCode relay + patched language server 副本 |
 
-原始应用图标不会被修改。比如 `Codex` 仍然直连启动原应用，`Codex-Proxy` 才是代理入口。
+原始应用图标不会被修改。比如 `ChatGPT` 仍然直连启动原应用，`ChatGPT-Proxy` 才是普通代理入口。
 
 ## 启动链路
 
@@ -31,9 +31,9 @@ EasyProxy 是面向桌面 AI 应用的代理启动器，当前默认方案是 `E
 - Antigravity: `%LOCALAPPDATA%\Programs\Antigravity\EasyProxy`
 - Antigravity IDE: `%LOCALAPPDATA%\Programs\Antigravity IDE\EasyProxy`
 - Cursor: `%LOCALAPPDATA%\Programs\cursor\EasyProxy`
-- Codex: `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\EasyProxy`
+- ChatGPT: `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\EasyProxy`
 
-生成 `CodexProxy.cmd` 时，如果检测到 `D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat`，会在启动 Codex 前静默调用它，用于确保本机 DBHub MCP 服务已经监听。
+生成 `ChatGPTProxy.cmd` 时，如果检测到 `D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat`，会在启动 ChatGPT 前静默调用它，用于确保本机 DBHub MCP 服务已经监听。
 
 ## 代理参数
 
@@ -102,7 +102,7 @@ GUI 中使用“生成代理启动脚本”即可。命令行也可以：
 
 ```powershell
 EasyProxy scripts --app all --proxy socks5://127.0.0.1:7890
-EasyProxy scripts --app codex --proxy socks5://127.0.0.1:7890
+EasyProxy scripts --app chatgpt --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app cursor --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app antigravity --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app antigravity-ide --proxy socks5://127.0.0.1:7890
@@ -137,28 +137,6 @@ EasyProxy ui --config app-proxy.json
 .\build-exe.bat win-x64 Release
 .\build-msi.bat
 .\build-setup.bat
-```
-
-## Codex QQ Skin
-
-GUI 的“AI 应用代理生成”区域提供独立的 `Codex 启用 QQ Skin` 勾选项。该选项写入
-`app-proxy.json` 的 `enableCodexQqSkin` 字段：
-
-```json
-{
-  "enableCodexQqSkin": true
-}
-```
-
-启用后，`Codex-Proxy` 会在同一次启动中注入代理参数与本机 CDP 参数，等待 CDP
-端点可用后再调用已安装的 Codex QQ Skin。QQ Skin 未安装或安装目录被移除时，
-启动器会自动回退为仅代理模式，不阻止 Codex 启动。
-
-命令行也可显式控制：
-
-```powershell
-EasyProxy scripts --app codex --proxy socks5://127.0.0.1:7890 --codex-qq-skin
-EasyProxy scripts --app codex --proxy socks5://127.0.0.1:7890 --no-codex-qq-skin
 ```
 
 发布目录只包含 EasyProxy 主程序和示例配置，不再包含 WinDivert 驱动文件。

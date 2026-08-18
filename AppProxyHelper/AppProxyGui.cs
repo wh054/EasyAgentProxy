@@ -75,8 +75,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly List<TargetApplicationPreset> _targetPresets = new();
-    private readonly CheckBox _codexCheck = new();
-    private readonly CheckBox _codexQqSkinCheck = new();
+    private readonly CheckBox _chatGptCheck = new();
     private readonly CheckBox _cursorCheck = new();
     private readonly CheckBox _claudeCheck = new();
     private readonly CheckBox _antigravityCheck = new();
@@ -531,20 +530,17 @@ internal sealed class AppProxyGuiForm : Form
         checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         checkTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
-        ConfigureCheck(_codexCheck, "ChatGPT (Codex) 应用");
-        ConfigureCheck(_codexQqSkinCheck, "Codex 启用 QQ Skin");
+        ConfigureCheck(_chatGptCheck, "ChatGPT 应用");
         ConfigureCheck(_cursorCheck, "Cursor 应用");
         ConfigureCheck(_claudeCheck, "Claude 应用");
         ConfigureCheck(_antigravityCheck, "Antigravity 应用");
         ConfigureCheck(_antigravityIdeCheck, "Antigravity IDE");
 
-        checkTable.Controls.Add(_codexCheck, 0, 0);
+        checkTable.Controls.Add(_chatGptCheck, 0, 0);
         checkTable.Controls.Add(_cursorCheck, 1, 0);
         checkTable.Controls.Add(_claudeCheck, 0, 1);
         checkTable.Controls.Add(_antigravityCheck, 1, 1);
         checkTable.Controls.Add(_antigravityIdeCheck, 0, 2);
-        checkTable.Controls.Add(_codexQqSkinCheck, 1, 2);
-        _codexCheck.CheckedChanged += (_, _) => UpdateCodexQqSkinAvailability();
 
         table.Controls.Add(checkTable, 0, 0);
 
@@ -809,7 +805,6 @@ internal sealed class AppProxyGuiForm : Form
             WaitForExit = _waitForExitCheck.Checked,
             RunDiagnosticsBeforeLaunch = _runDiagnosticsCheck.Checked,
             AbortLaunchWhenDiagnosticsFail = _abortOnDiagnosticsFailCheck.Checked,
-            EnableCodexQqSkin = _codexQqSkinCheck.Checked,
             NoProxy = SplitCsv(_noProxyText.Text),
             Diagnostics = new DiagnosticsConfig
             {
@@ -839,7 +834,6 @@ internal sealed class AppProxyGuiForm : Form
         _waitForExitCheck.Checked = config.WaitForExit;
         _runDiagnosticsCheck.Checked = config.RunDiagnosticsBeforeLaunch;
         _abortOnDiagnosticsFailCheck.Checked = config.AbortLaunchWhenDiagnosticsFail;
-        UpdateCodexQqSkinAvailability(config.EnableCodexQqSkin);
         _noProxyText.Text = string.Join(", ", config.NoProxy);
 
         _tcpConnectTimeoutNumber.Value = Clamp(config.Diagnostics.TcpConnectTimeoutMs, _tcpConnectTimeoutNumber);
@@ -1048,17 +1042,15 @@ internal sealed class AppProxyGuiForm : Form
                 : _proxyUriText.Text.Trim();
             var scripts = new List<string>();
 
-            var checkBoxes = new[] { _codexCheck, _cursorCheck, _claudeCheck, _antigravityCheck, _antigravityIdeCheck };
+            var checkBoxes = new[] { _chatGptCheck, _cursorCheck, _claudeCheck, _antigravityCheck, _antigravityIdeCheck };
             foreach (var cb in checkBoxes)
             {
                 if (cb.Checked && cb.Tag is TargetApplicationPreset app)
                 {
-                    scripts.Add(ProxyLauncherScriptGenerator.CreateScript(
+                    scripts.AddRange(ProxyLauncherScriptGenerator.CreateScripts(
                         app.ExecutablePath,
                         app.Name,
-                        proxyUri,
-                        enableCodexQqSkin: app.Id.Equals("codex", StringComparison.OrdinalIgnoreCase)
-                            && _codexQqSkinCheck.Checked));
+                        proxyUri));
                 }
             }
 
@@ -1169,38 +1161,11 @@ internal sealed class AppProxyGuiForm : Form
         _targetPresets.Clear();
         _targetPresets.AddRange(FindTargetApplicationPresets());
 
-        UpdateAiAppCheckbox(_codexCheck, "codex", "ChatGPT (Codex) 应用");
+        UpdateAiAppCheckbox(_chatGptCheck, "chatgpt", "ChatGPT 应用");
         UpdateAiAppCheckbox(_cursorCheck, "cursor", "Cursor 应用");
         UpdateAiAppCheckbox(_claudeCheck, "claude", "Claude 应用");
         UpdateAiAppCheckbox(_antigravityCheck, "antigravity", "Antigravity 应用");
         UpdateAiAppCheckbox(_antigravityIdeCheck, "antigravity-ide", "Antigravity IDE");
-        UpdateCodexQqSkinAvailability();
-    }
-
-    private void UpdateCodexQqSkinAvailability(bool? configuredPreference = null)
-    {
-        var state = ResolveCodexQqSkinOptionState(
-            configuredPreference ?? _codexQqSkinCheck.Checked,
-            ProxyLauncherScriptGenerator.IsCodexQqSkinInstalled(),
-            _codexCheck.Enabled,
-            _codexCheck.Checked);
-        _codexQqSkinCheck.Text = state.Text;
-        _codexQqSkinCheck.Enabled = state.Enabled;
-        _codexQqSkinCheck.Checked = state.Checked;
-    }
-
-    internal static (bool Checked, bool Enabled, string Text) ResolveCodexQqSkinOptionState(
-        bool configuredPreference,
-        bool skinInstalled,
-        bool codexAvailable,
-        bool codexSelected)
-    {
-        return (
-            Checked: configuredPreference,
-            Enabled: codexAvailable && codexSelected,
-            Text: skinInstalled
-                ? "Codex 启用 QQ Skin (已检测到)"
-                : "Codex 启用 QQ Skin (未安装，启动时仅代理)");
     }
 
     private void UpdateAiAppCheckbox(CheckBox checkBox, string id, string displayName)

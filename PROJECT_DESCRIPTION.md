@@ -1,10 +1,10 @@
 # EasyProxy 项目说明
 
-EasyProxy 当前定位为 Electron/Chromium 桌面 AI 应用的代理启动器，优先服务 Codex、Cursor、Antigravity 和 Antigravity IDE。
+EasyProxy 当前定位为 Electron/Chromium 桌面 AI 应用的代理启动器，优先服务 ChatGPT、Cursor、Antigravity 和 Antigravity IDE。
 
 ## 产品方向
 
-早期 Transparent 方案依赖 WinDivert 做系统级透明拦截。实际验证中，Codex 和 Antigravity 在关闭全局 TUN 后会遇到首包慢、重连、QUIC/UDP 绕行、WinDivert 驱动兼容等问题。对当前目标应用来说，Transparent 没有比显式 Chromium 代理参数和环境变量更稳定。
+早期 Transparent 方案依赖 WinDivert 做系统级透明拦截。实际验证中，ChatGPT 和 Antigravity 在关闭全局 TUN 后会遇到首包慢、重连、QUIC/UDP 绕行、WinDivert 驱动兼容等问题。对当前目标应用来说，Transparent 没有比显式 Chromium 代理参数和环境变量更稳定。
 
 现在产品入口收敛为：
 
@@ -17,15 +17,15 @@ EasyProxy 当前定位为 Electron/Chromium 桌面 AI 应用的代理启动器�
 
 ## 应用处理策略
 
-### Codex
+### ChatGPT
 
-Codex 使用 Chromium 参数和环境变量。由于 Microsoft Store/WindowsApps 目录通常不可写，代理脚本放到：
+ChatGPT 使用 Chromium 参数和环境变量。由于 Microsoft Store/WindowsApps 目录通常不可写，代理脚本放到：
 
 ```text
 %LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\EasyProxy
 ```
 
-Codex 的 Microsoft Store 包目录会在每次更新后带上新的版本号，例如：
+ChatGPT 的 Microsoft Store 包仍使用技术包名 `OpenAI.Codex`，目录会在每次更新后带上新的版本号，例如：
 
 ```text
 C:\Program Files\WindowsApps\OpenAI.Codex_26.519.2736.0_x64__2p2nqsd0c76g0
@@ -37,9 +37,9 @@ C:\Program Files\WindowsApps\OpenAI.Codex_26.519.2736.0_x64__2p2nqsd0c76g0
 C:\Program Files\WindowsApps\OpenAI.Codex_*__2p2nqsd0c76g0
 ```
 
-回退枚举会用正则从目录名提取版本号，按版本号倒序选择最新包，并拼接 `app\Codex.exe`。这样 Codex 更新后重新生成 `Codex-Proxy` 时，EasyProxy 会优先找到最新安装目录。
+回退枚举会用正则从目录名提取版本号，按版本号倒序选择最新包，并优先拼接 `app\ChatGPT.exe`。这样 ChatGPT 更新后重新生成代理入口时，EasyProxy 会优先找到最新安装目录。
 
-生成入口为 `Codex-Proxy.lnk`。
+生成入口为 `ChatGPT-Proxy.lnk`。
 
 ### Cursor
 
@@ -114,9 +114,9 @@ patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关�
 - `AppProxyHelper/ConfigLoader.cs`：配置加载、保存、验证和 Chromium 参数整理。
 - `AppProxyHelper/ProcessProxyLauncher.cs`：目标进程启动和环境变量注入。
 - `AppProxyHelper/ProxyEnvironmentProfile.cs`：统一生成 Chromium 参数、HTTP(S)/gRPC 代理环境变量和 no-proxy 变量。
-- `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置，并持久化 Codex 后端使用的 `.env` 代理变量。
+- `AppProxyHelper/KnownEditorProxySettings.cs`：同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置，并持久化 ChatGPT 后端使用的 `.env` 代理变量。
 - `AppProxyHelper/ProxyLauncherScriptGenerator.cs`：生成应用目录脚本和 `*-Proxy` 快捷方式。
-- `AppProxyHelper/TargetApplicationCatalog.cs`：自动发现 Codex、Cursor、Antigravity、Antigravity IDE。
+- `AppProxyHelper/TargetApplicationCatalog.cs`：自动发现 ChatGPT、Cursor、Antigravity、Antigravity IDE。
 - `AppProxyHelper/AntigravityCloudCodeRelay.cs`：Antigravity 系列 CloudCode 本机 relay。
 - `AppProxyHelper/AntigravityLanguageServerShim.cs`：Antigravity 主应用 shim 与 Antigravity IDE patched server 副本生成。
 - `AppProxyHelper/AppProxyGui.cs`：WinForms GUI。
@@ -129,7 +129,7 @@ Transparent 相关实现暂时留在仓库中作为历史实现，但不再由�
 
 - 生成代理图标时必须保留原图标，只新增 `应用名-Proxy.lnk`。
 - 生成脚本默认进入应用目录的 `EasyProxy` 子目录。
-- Codex 的 WindowsApps 安装目录包含滚动版本号；不要新增硬编码版本路径，优先维护 `TargetApplicationCatalog` 中的 AppX 查询、包名前缀、publisher id 和版本排序逻辑。
+- ChatGPT 的 WindowsApps 安装目录包含滚动版本号；不要新增硬编码版本路径，优先维护 `TargetApplicationCatalog` 中的 AppX 查询、包名前缀、publisher id 和版本排序逻辑。
 - Antigravity 主应用使用 shim；Antigravity IDE 使用 patched language server 副本，不要混用。
 - Antigravity 系列共用 `127.0.0.1:18990` relay；健康 relay 可复用，只有不健康或旧脚本才重启。
 - 应用更新后代理失效时，优先重新生成对应 `*-Proxy` 入口。

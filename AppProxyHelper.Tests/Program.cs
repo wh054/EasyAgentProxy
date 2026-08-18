@@ -11,9 +11,8 @@ internal static class Program
             ("launcher script injects proxy environment and starts terminal", LauncherScriptInjectsProxyEnvironment),
             ("codex launcher script keeps all proxy environment", CodexLauncherScriptKeepsAllProxyEnvironment),
             ("codex dotenv preserves unrelated values and replaces proxy values", CodexDotEnvPreservesUnrelatedValues),
-            ("config persists Codex QQ skin preference", ConfigPersistsCodexQqSkinPreference),
-            ("Codex QQ skin preference survives temporary uninstall", CodexQqSkinPreferenceSurvivesTemporaryUninstall),
-            ("codex desktop launcher combines proxy and QQ skin", CodexDesktopLauncherCombinesProxyAndQqSkin),
+            ("ChatGPT launcher generation creates one proxy entry", ChatGptLauncherGenerationCreatesOneEntry),
+            ("shortcut target rebases away from sandbox profile", ShortcutTargetRebasesAwayFromSandboxProfile),
             ("claude desktop launcher uses http proxy argument", ClaudeDesktopLauncherUsesHttpProxyArgument),
             ("claude code settings receive http proxy env", ClaudeCodeSettingsReceiveHttpProxyEnv),
             ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens)
@@ -107,69 +106,44 @@ internal static class Program
         });
     }
 
-    private static void CodexDesktopLauncherCombinesProxyAndQqSkin()
-    {
-        var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
-        var skinStartScript = @"C:\Users\me\AppData\Local\CodexQQSkin\engine\scripts\windows\start-qq-skin-windows.ps1";
-        var launcher = ProxyLauncherScriptGenerator.BuildScript(
-            @"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__test\app\ChatGPT.exe",
-            profile,
-            antigravityRelayScriptPath: null,
-            includeAntigravityLanguageServerShim: false,
-            resolveCodexAtLaunch: true,
-            resolveClaudeAtLaunch: false,
-            codexQqSkinStartScript: skinStartScript);
-        var helper = ProxyLauncherScriptGenerator.BuildCodexProxySkinHelperScript();
-        var proxyOnlyLauncher = ProxyLauncherScriptGenerator.BuildScript(
-            @"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__test\app\ChatGPT.exe",
-            profile,
-            antigravityRelayScriptPath: null,
-            includeAntigravityLanguageServerShim: false,
-            resolveCodexAtLaunch: true,
-            resolveClaudeAtLaunch: false,
-            codexQqSkinStartScript: null);
-
-        AssertContains(launcher, ProxyLauncherScriptGenerator.CodexProxySkinHelperFileName);
-        AssertContains(launcher, skinStartScript);
-        AssertDoesNotContain(proxyOnlyLauncher, ProxyLauncherScriptGenerator.CodexProxySkinHelperFileName);
-        AssertContains(helper, "--proxy-server=$ProxyServer");
-        AssertContains(helper, "--remote-debugging-address=127.0.0.1");
-        AssertContains(helper, "--remote-debugging-port=$Port");
-        AssertContains(helper, "Wait-CodexCdpEndpoint -Port $Port");
-        AssertContains(helper, "& $SkinStartScript -Port $Port -SkinMode 'qq'");
-        AssertContains(helper, "Codex QQ Skin is unavailable; starting proxy-only Codex.");
-        AssertContains(helper, "& $packagedAppLauncher $ExecutablePath @proxyOnlyArguments");
-    }
-
-    private static void ConfigPersistsCodexQqSkinPreference()
+    private static void ChatGptLauncherGenerationCreatesOneEntry()
     {
         WithTempDirectory(tempDirectory =>
         {
-            var configPath = Path.Combine(tempDirectory, "app-proxy.json");
-            ConfigLoader.Save(configPath, new AppProxyConfig
+            var executablePath = Path.Combine(tempDirectory, "ChatGPT.exe");
+            var outputDirectory = Path.Combine(tempDirectory, "launchers");
+            var codexHome = Path.Combine(tempDirectory, ".codex");
+            File.WriteAllBytes(executablePath, Array.Empty<byte>());
+            var previousCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+            try
             {
-                ProxyUri = "socks5://127.0.0.1:7890",
-                EnableCodexQqSkin = true
-            });
+                Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
+                var scripts = ProxyLauncherScriptGenerator.CreateScripts(
+                    executablePath,
+                    "ChatGPT 应用",
+                    "socks5://127.0.0.1:7890",
+                    outputDirectory,
+                    createShortcuts: false);
 
-            var loaded = ConfigLoader.Load(configPath).Value;
-            AssertEqual(true, loaded.EnableCodexQqSkin, "Codex QQ Skin preference");
-            AssertContains(File.ReadAllText(configPath), "\"enableCodexQqSkin\": true");
+                AssertEqual(1, scripts.Count, "launcher count");
+                AssertEqual("ChatGPTProxy.cmd", Path.GetFileName(scripts[0]), "launcher name");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("CODEX_HOME", previousCodexHome);
+            }
         });
     }
-
-    private static void CodexQqSkinPreferenceSurvivesTemporaryUninstall()
+    private static void ShortcutTargetRebasesAwayFromSandboxProfile()
     {
-        var state = AppProxyGuiForm.ResolveCodexQqSkinOptionState(
-            configuredPreference: true,
-            skinInstalled: false,
-            codexAvailable: true,
-            codexSelected: true);
+        var rebased = ProxyLauncherScriptGenerator.RebaseLocalAppDataPath(
+            @"C:\Users\CodexSandboxOffline\AppData\Local\Packages\OpenAI.Codex_test\LocalCache\EasyProxy\ChatGPTProxy.vbs",
+            @"C:\Users\me\AppData\Local");
 
-        AssertEqual(true, state.Checked, "stored preference remains checked");
-        AssertEqual(true, state.Enabled, "option remains editable before reinstall");
-        AssertContains(state.Text, "未安装");
-        AssertContains(state.Text, "仅代理");
+        AssertEqual(
+            @"C:\Users\me\AppData\Local\Packages\OpenAI.Codex_test\LocalCache\EasyProxy\ChatGPTProxy.vbs",
+            rebased,
+            "rebased shortcut target");
     }
 
     private static void ClaudeDesktopLauncherUsesHttpProxyArgument()
@@ -180,7 +154,7 @@ internal static class Program
             profile,
             antigravityRelayScriptPath: null,
             includeAntigravityLanguageServerShim: false,
-            resolveCodexAtLaunch: false,
+            resolveChatGptAtLaunch: false,
             resolveClaudeAtLaunch: true);
 
         AssertContains(script, "\"--proxy-server=http://127.0.0.1:7890\"");

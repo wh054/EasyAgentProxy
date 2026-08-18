@@ -101,7 +101,7 @@ internal static class KnownEditorProxySettings
             retainedLines.Add(string.Empty);
         }
 
-        retainedLines.Add("# Managed by EasyProxy for the Codex desktop app.");
+        retainedLines.Add("# Managed by EasyProxy for the ChatGPT desktop app.");
         retainedLines.AddRange(profile.GetEnvironmentVariables().Select(
             static pair => pair.Key + "=" + EscapeDotEnvValue(pair.Value)));
         File.WriteAllLines(
@@ -113,7 +113,8 @@ internal static class KnownEditorProxySettings
     private static bool IsCodexProxyEnvironmentLine(string line)
     {
         var trimmed = line.TrimStart();
-        if (trimmed.Equals("# Managed by EasyProxy for the Codex desktop app.", StringComparison.Ordinal))
+        if (trimmed.Equals("# Managed by EasyProxy for the ChatGPT desktop app.", StringComparison.Ordinal)
+            || trimmed.Equals("# Managed by EasyProxy for the Codex desktop app.", StringComparison.Ordinal))
         {
             return true;
         }
