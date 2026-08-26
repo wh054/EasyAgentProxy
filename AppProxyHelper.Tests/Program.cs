@@ -15,6 +15,9 @@ internal static class Program
             ("shortcut target rebases away from sandbox profile", ShortcutTargetRebasesAwayFromSandboxProfile),
             ("claude desktop launcher uses http proxy argument", ClaudeDesktopLauncherUsesHttpProxyArgument),
             ("claude code settings receive http proxy env", ClaudeCodeSettingsReceiveHttpProxyEnv),
+            ("antigravity shim routes cloudcode and generative language", AntigravityShimRoutesAllPrimaryEndpoints),
+            ("antigravity binary patch routes generative language", AntigravityBinaryPatchRoutesGenerativeLanguage),
+            ("antigravity relay includes generative route and bounded retries", AntigravityRelayIncludesCoverageAndRetries),
             ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens)
         };
 
@@ -193,6 +196,56 @@ internal static class Program
             AssertEqual(false, env.ContainsKey("all_proxy"), "all_proxy removed");
             AssertEqual(false, env.ContainsKey("CLOUDSDK_PROXY_TYPE"), "CLOUDSDK_PROXY_TYPE removed");
         });
+    }
+
+    private static void AntigravityShimRoutesAllPrimaryEndpoints()
+    {
+        var rewritten = AntigravityLanguageServerShim.RewriteArgs(new[]
+        {
+            "--standalone",
+            "--api_server_url",
+            "https://generativelanguage.googleapis.com",
+            "--cloud_code_endpoint",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "--host_bridge_url=http://127.0.0.1:50000"
+        });
+
+        AssertEqual(AntigravityCloudCodeRelay.GenerativeLanguageRelayUrl, rewritten[2], "api server relay");
+        AssertEqual(AntigravityCloudCodeRelay.RelayUrl, rewritten[4], "cloudcode relay");
+        AssertEqual("--host_bridge_url=http://127.0.0.1:50000", rewritten[5], "unrelated argument");
+    }
+
+    private static void AntigravityBinaryPatchRoutesGenerativeLanguage()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var binaryPath = Path.Combine(tempDirectory, "language_server.exe");
+            File.WriteAllText(
+                binaryPath,
+                "prefix:https://generativelanguage.googleapis.com:suffix",
+                System.Text.Encoding.ASCII);
+
+            AntigravityLanguageServerShim.PatchCloudCodeUrls(binaryPath);
+
+            var patched = File.ReadAllText(binaryPath, System.Text.Encoding.ASCII);
+            AssertContains(patched, AntigravityCloudCodeRelay.GenerativeLanguageRelayUrl);
+            AssertDoesNotContain(patched, "https://generativelanguage.googleapis.com");
+            AssertEqual(
+                "https://generativelanguage.googleapis.com".Length,
+                AntigravityCloudCodeRelay.GenerativeLanguageRelayUrl.Length,
+                "binary patch URL length");
+        });
+    }
+
+    private static void AntigravityRelayIncludesCoverageAndRetries()
+    {
+        var script = AntigravityCloudCodeRelay.ScriptContent;
+        AssertContains(script, "https://generativelanguage.googleapis.com");
+        AssertContains(script, "const GENERATIVE_LANGUAGE_PREFIX = \"/__easyproxy/gemini\"");
+        AssertContains(script, "function proxyBufferedWithRetries");
+        AssertContains(script, "function isSafeToRetry");
+        AssertContains(script, "requestCommitted");
+        AssertContains(script, "if (completed)");
     }
 
     private static void ContextMenuCommandsPassExplorerDirectoryTokens()

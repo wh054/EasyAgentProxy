@@ -11,6 +11,8 @@ internal static class AntigravityCloudCodeRelay
     public const string RelayUrl = "http://127.0.0.1:18990";
     public const string HealthUrl = "http://127.0.0.1:18990/__easyproxy/health";
     public const string DefaultUpstream = "https://daily-cloudcode-pa.googleapis.com";
+    public const string GenerativeLanguagePathPrefix = "/__easyproxy/gemini";
+    public const string GenerativeLanguageRelayUrl = RelayUrl + GenerativeLanguagePathPrefix;
 
     public static bool IsAntigravityExecutable(string executablePath)
     {
@@ -246,6 +248,11 @@ internal static class AntigravityCloudCodeRelay
         let nextRequestId = 1;
         const DEFAULT_UPSTREAM_TIMEOUT_MS = readTimeoutMs("EASYPROXY_UPSTREAM_TIMEOUT_MS", 25000);
         const STREAM_UPSTREAM_TIMEOUT_MS = readTimeoutMs("EASYPROXY_STREAM_TIMEOUT_MS", 0);
+        const CONNECT_TIMEOUT_MS = readTimeoutMs("EASYPROXY_CONNECT_TIMEOUT_MS", 10000);
+        const RETRY_ATTEMPTS = Math.max(1, readTimeoutMs("EASYPROXY_RETRY_ATTEMPTS", 3));
+        const RETRY_BASE_DELAY_MS = readTimeoutMs("EASYPROXY_RETRY_BASE_DELAY_MS", 250);
+        const MAX_BUFFERED_REQUEST_BYTES = readTimeoutMs("EASYPROXY_MAX_BUFFERED_REQUEST_BYTES", 8 * 1024 * 1024);
+        const GENERATIVE_LANGUAGE_PREFIX = "/__easyproxy/gemini";
 
         function log(message) {
           fs.appendFile(logPath, `${new Date().toISOString()} ${message}\n`, () => {});
@@ -269,9 +276,23 @@ internal static class AntigravityCloudCodeRelay
             : DEFAULT_UPSTREAM_TIMEOUT_MS;
         }
 
-        function pickUpstream(clientUrl) {
-          if (clientUrl.startsWith("/v1internal")) return new URL(defaultUpstream);
-          return new URL("https://www.googleapis.com");
+        function resolveRoute(clientUrl) {
+          const raw = clientUrl || "/";
+          if (raw === GENERATIVE_LANGUAGE_PREFIX
+              || raw.startsWith(`${GENERATIVE_LANGUAGE_PREFIX}/`)
+              || raw.startsWith(`${GENERATIVE_LANGUAGE_PREFIX}?`)) {
+            const suffix = raw.slice(GENERATIVE_LANGUAGE_PREFIX.length);
+            return {
+              upstream: new URL("https://generativelanguage.googleapis.com"),
+              path: suffix === "" ? "/" : (suffix.startsWith("?") ? `/${suffix}` : suffix),
+            };
+          }
+
+          if (raw.startsWith("/v1internal")) {
+            return { upstream: new URL(defaultUpstream), path: raw };
+          }
+
+          return { upstream: new URL("https://www.googleapis.com"), path: raw };
         }
 
         function pickFallbackUpstream(clientUrl, upstream) {
@@ -331,7 +352,13 @@ internal static class AntigravityCloudCodeRelay
         }
 
         function sanitizeResponseHeaders(headers, bodyLength) {
-          const sanitized = { ...headers, "content-length": String(bodyLength) };
+          const sanitized = sanitizeStreamingResponseHeaders(headers);
+          sanitized["content-length"] = String(bodyLength);
+          return sanitized;
+        }
+
+        function sanitizeStreamingResponseHeaders(headers) {
+          const sanitized = { ...headers };
           for (const name of [
             "connection",
             "keep-alive",
@@ -354,13 +381,30 @@ internal static class AntigravityCloudCodeRelay
           clientRes.end(cached.body);
         }
 
-        function proxyBufferedWithFallback(clientReq, clientRes, upstream, headers, requestId, startedAt, authKey) {
+        function isSafeToRetry(error, requestCommitted, method) {
+          if (["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase())) return true;
+          const message = String(error && error.message || "").toLowerCase();
+          const connectionSetupFailure = message.includes("before secure tls connection was established")
+            || message.includes("proxy connect")
+            || message.includes("tls handshake")
+            || message.includes("connect timed out");
+          if (connectionSetupFailure) return true;
+          if (requestCommitted) return false;
+          return Boolean(error && ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE"].includes(error.code));
+        }
+
+        function retryDelay(attemptIndex) {
+          return RETRY_BASE_DELAY_MS * Math.max(1, attemptIndex);
+        }
+
+        function proxyBufferedWithRetries(clientReq, clientRes, route, headers, requestId, startedAt, authKey) {
           const chunks = [];
           let size = 0;
           let ended = false;
+          let activeRequest = null;
           clientReq.on("data", (chunk) => {
             size += chunk.length;
-            if (size > 2 * 1024 * 1024) {
+            if (size > MAX_BUFFERED_REQUEST_BYTES) {
               clientReq.destroy(new Error("request body too large for retry buffer"));
               return;
             }
@@ -368,79 +412,86 @@ internal static class AntigravityCloudCodeRelay
           });
           clientReq.on("end", () => {
             const body = Buffer.concat(chunks);
-            const candidates = [upstream];
-            const fallback = pickFallbackUpstream(clientReq.url || "/", upstream);
+            const candidates = [route.upstream];
+            const fallback = pickFallbackUpstream(route.path, route.upstream);
             if (fallback) candidates.push(fallback);
+            let candidateIndex = 0;
             let attemptIndex = 0;
 
             function attempt() {
-              const attemptUpstream = candidates[attemptIndex];
+              if (ended) return;
+              const attemptUpstream = candidates[candidateIndex];
               const attemptHeaders = { ...headers, host: attemptUpstream.hostname, "content-length": String(body.length) };
+              let requestCommitted = false;
+              let responseStarted = false;
               const upstreamReq = https.request({
                 protocol: "https:",
                 hostname: attemptUpstream.hostname,
                 port: 443,
                 method: clientReq.method,
-                path: clientReq.url,
+                path: route.path,
                 headers: attemptHeaders,
                 createConnection: (_options, callback) => createProxiedTlsConnection(attemptUpstream, callback),
               }, (upstreamRes) => {
-                if (ended) {
-                  upstreamRes.resume();
+                responseStarted = true;
+                ended = true;
+                const statusCode = upstreamRes.statusCode || 502;
+                const responseHeaders = sanitizeStreamingResponseHeaders(upstreamRes.headers);
+                const responseChunks = authKey ? [] : null;
+                log(`[${requestId}] <- ${statusCode} ${Date.now() - startedAt}ms upstream=${attemptUpstream.hostname} attempt=${attemptIndex + 1}`);
+                if (!clientRes.headersSent && !clientRes.destroyed) {
+                  clientRes.writeHead(statusCode, responseHeaders);
+                }
+                upstreamRes.on("data", (chunk) => {
+                  if (responseChunks) responseChunks.push(chunk);
+                  if (!clientRes.destroyed && !clientRes.writableEnded) clientRes.write(chunk);
+                });
+                upstreamRes.on("end", () => {
+                  if (responseChunks && statusCode >= 200 && statusCode < 300) {
+                    const responseBody = Buffer.concat(responseChunks);
+                    onboardCache.set(authKey, {
+                      statusCode,
+                      headers: sanitizeResponseHeaders(upstreamRes.headers, responseBody.length),
+                      body: responseBody,
+                    });
+                  }
+                  if (!clientRes.destroyed && !clientRes.writableEnded) clientRes.end();
+                });
+                upstreamRes.on("error", (error) => {
+                  log(`[${requestId}] !! response ${Date.now() - startedAt}ms ${error.message}`);
+                  if (!clientRes.destroyed && !clientRes.writableEnded) clientRes.destroy(error);
+                });
+              });
+              activeRequest = upstreamReq;
+              upstreamReq.once("finish", () => { requestCommitted = true; });
+              const upstreamTimeoutMs = getUpstreamTimeoutMs(route.path);
+              if (upstreamTimeoutMs > 0) {
+                upstreamReq.setTimeout(upstreamTimeoutMs, () => {
+                  const error = new Error(`upstream request timed out after ${upstreamTimeoutMs}ms`);
+                  error.code = "ETIMEDOUT";
+                  upstreamReq.destroy(error);
+                });
+              }
+              upstreamReq.on("error", (error) => {
+                if (ended || responseStarted) return;
+                const retryable = isSafeToRetry(error, requestCommitted, clientReq.method);
+                if (retryable && attemptIndex + 1 < RETRY_ATTEMPTS) {
+                  attemptIndex++;
+                  const delay = retryDelay(attemptIndex);
+                  log(`[${requestId}] .. retry ${attemptIndex + 1}/${RETRY_ATTEMPTS} after ${delay}ms upstream=${attemptUpstream.hostname} error=${error.message}`);
+                  setTimeout(attempt, delay);
+                  return;
+                }
+                if (retryable && candidateIndex + 1 < candidates.length) {
+                  candidateIndex++;
+                  attemptIndex = 0;
+                  log(`[${requestId}] .. fallback upstream=${candidates[candidateIndex].hostname} error=${error.message}`);
+                  setTimeout(attempt, RETRY_BASE_DELAY_MS);
                   return;
                 }
                 ended = true;
-                clearTimeout(fallbackTimer);
-                const statusCode = upstreamRes.statusCode || 502;
-                const responseChunks = [];
-                if (!clientRes.headersSent && !clientRes.destroyed) {
-                  clientRes.writeHead(statusCode, upstreamRes.headers);
-                }
-                upstreamRes.on("data", (chunk) => {
-                  responseChunks.push(chunk);
-                  if (!clientRes.destroyed && !clientRes.writableEnded) {
-                    clientRes.write(chunk);
-                  }
-                });
-                upstreamRes.on("end", () => {
-                  const responseBody = Buffer.concat(responseChunks);
-                  const responseHeaders = sanitizeResponseHeaders(upstreamRes.headers, responseBody.length);
-                  if (statusCode >= 200 && statusCode < 300) {
-                    onboardCache.set(authKey, { statusCode, headers: responseHeaders, body: responseBody });
-                  }
-                  log(`[${requestId}] <- ${statusCode} ${Date.now() - startedAt}ms upstream=${attemptUpstream.hostname}`);
-                  if (!clientRes.headersSent) {
-                    clientRes.writeHead(statusCode, responseHeaders);
-                  }
-                  if (!clientRes.destroyed && !clientRes.writableEnded) {
-                    clientRes.end();
-                  }
-                });
-              });
-              upstreamReq.setTimeout(25000, () => {
-                upstreamReq.destroy(new Error("upstream request timed out"));
-              });
-              const fallbackTimer = setTimeout(() => {
-                if (ended || attemptIndex + 1 >= candidates.length) return;
-                log(`[${requestId}] .. fallback after ${Date.now() - startedAt}ms upstream=${candidates[attemptIndex + 1].hostname}`);
-                attemptIndex++;
-                attempt();
-                upstreamReq.destroy(new Error("superseded by fallback"));
-              }, 4500);
-              upstreamReq.on("error", (error) => {
-                clearTimeout(fallbackTimer);
-                if (error.message === "superseded by fallback") return;
-                if (!ended && attemptIndex + 1 < candidates.length) {
-                  log(`[${requestId}] .. retry after error ${error.message}`);
-                  attemptIndex++;
-                  attempt();
-                  return;
-                }
-                if (!ended) {
-                  ended = true;
-                  log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
-                  writeRelayError(clientRes, error.message);
-                }
+                log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
+                writeRelayError(clientRes, error.message);
               });
               upstreamReq.end(body);
             }
@@ -450,20 +501,48 @@ internal static class AntigravityCloudCodeRelay
           clientReq.on("error", (error) => {
             if (!ended) {
               ended = true;
-              log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
+              if (activeRequest) activeRequest.destroy(new Error("client request failed"));
+              log(`[${requestId}] !! client ${Date.now() - startedAt}ms ${error.message}`);
               writeRelayError(clientRes, error.message);
             }
           });
           clientReq.on("aborted", () => {
+            ended = true;
+            if (activeRequest) activeRequest.destroy(new Error("client aborted"));
             log(`[${requestId}] xx client aborted ${Date.now() - startedAt}ms`);
+          });
+          clientRes.on("close", () => {
+            if (!clientRes.writableEnded && activeRequest) {
+              ended = true;
+              activeRequest.destroy(new Error("client closed"));
+            }
           });
         }
 
         function createProxiedTlsConnection(upstream, callback) {
           const socket = net.connect(Number(proxy.port || 80), proxy.hostname);
           const target = `${upstream.hostname}:443`;
+          let completed = false;
+          function finish(error, connectedSocket) {
+            if (completed) {
+              if (connectedSocket) connectedSocket.destroy();
+              return;
+            }
+            completed = true;
+            socket.off("error", onSocketError);
+            socket.setTimeout(0);
+            callback(error, connectedSocket);
+          }
+          function onSocketError(error) {
+            finish(error);
+          }
           socket.once("connect", () => {
             socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Connection: keep-alive\r\n\r\n`);
+          });
+          socket.setTimeout(CONNECT_TIMEOUT_MS, () => {
+            const error = new Error(`Proxy CONNECT timed out after ${CONNECT_TIMEOUT_MS}ms: ${target}`);
+            error.code = "ETIMEDOUT";
+            socket.destroy(error);
           });
           let buffer = Buffer.alloc(0);
           socket.on("data", function onData(chunk) {
@@ -478,9 +557,16 @@ internal static class AntigravityCloudCodeRelay
             }
             const rest = buffer.subarray(headerEnd + 4);
             if (rest.length) socket.unshift(rest);
-            callback(null, tls.connect({ socket, servername: upstream.hostname, ALPNProtocols: ["http/1.1"] }));
+            const tlsSocket = tls.connect({ socket, servername: upstream.hostname, ALPNProtocols: ["http/1.1"] });
+            tlsSocket.setTimeout(CONNECT_TIMEOUT_MS, () => {
+              const error = new Error(`TLS handshake timed out after ${CONNECT_TIMEOUT_MS}ms: ${target}`);
+              error.code = "ETIMEDOUT";
+              tlsSocket.destroy(error);
+            });
+            tlsSocket.once("secureConnect", () => tlsSocket.setTimeout(0));
+            finish(null, tlsSocket);
           });
-          socket.once("error", callback);
+          socket.once("error", onSocketError);
         }
 
         const server = http.createServer((clientReq, clientRes) => {
@@ -490,11 +576,11 @@ internal static class AntigravityCloudCodeRelay
             return;
           }
 
-          const upstream = pickUpstream(clientReq.url || "/");
-          const headers = buildUpstreamHeaders(clientReq.headers, upstream);
+          const route = resolveRoute(clientReq.url || "/");
+          const headers = buildUpstreamHeaders(clientReq.headers, route.upstream);
           const requestId = nextRequestId++;
           const startedAt = Date.now();
-          log(`[${requestId}] -> ${clientReq.method || "GET"} ${sanitizeClientUrl(clientReq.url)} upstream=${upstream.hostname} auth=${getAuthScheme(clientReq.headers)} len=${clientReq.headers["content-length"] || ""} expect=${clientReq.headers.expect ? "1" : "0"}`);
+          log(`[${requestId}] -> ${clientReq.method || "GET"} ${sanitizeClientUrl(clientReq.url)} upstream=${route.upstream.hostname} auth=${getAuthScheme(clientReq.headers)} len=${clientReq.headers["content-length"] || ""} expect=${clientReq.headers.expect ? "1" : "0"}`);
           if ((clientReq.url || "").startsWith("/v1internal:onboardUser")) {
             const authKey = getAuthKey(clientReq.headers);
             const cached = onboardCache.get(authKey);
@@ -503,43 +589,10 @@ internal static class AntigravityCloudCodeRelay
               return;
             }
 
-            proxyBufferedWithFallback(clientReq, clientRes, upstream, headers, requestId, startedAt, authKey);
+            proxyBufferedWithRetries(clientReq, clientRes, route, headers, requestId, startedAt, authKey);
             return;
           }
-
-          const upstreamReq = https.request({
-            protocol: "https:",
-            hostname: upstream.hostname,
-            port: 443,
-            method: clientReq.method,
-            path: clientReq.url,
-            headers,
-            createConnection: (_options, callback) => createProxiedTlsConnection(upstream, callback),
-          }, (upstreamRes) => {
-            log(`[${requestId}] <- ${upstreamRes.statusCode || 502} ${Date.now() - startedAt}ms`);
-            clientRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
-            upstreamRes.pipe(clientRes);
-          });
-          const upstreamTimeoutMs = getUpstreamTimeoutMs(clientReq.url || "/");
-          if (upstreamTimeoutMs > 0) {
-            upstreamReq.setTimeout(upstreamTimeoutMs, () => {
-              upstreamReq.destroy(new Error(`upstream request timed out after ${upstreamTimeoutMs}ms`));
-            });
-          }
-          upstreamReq.on("error", (error) => {
-            log(`[${requestId}] !! ${Date.now() - startedAt}ms ${error.message}`);
-            writeRelayError(clientRes, error.message);
-          });
-          clientReq.on("aborted", () => {
-            log(`[${requestId}] xx client aborted ${Date.now() - startedAt}ms`);
-            upstreamReq.destroy(new Error("client aborted"));
-          });
-          clientRes.on("close", () => {
-            if (!clientRes.writableEnded) {
-              upstreamReq.destroy(new Error("client closed"));
-            }
-          });
-          clientReq.pipe(upstreamReq);
+          proxyBufferedWithRetries(clientReq, clientRes, route, headers, requestId, startedAt, null);
         });
 
         server.listen(listenPort, listenHost, () => {

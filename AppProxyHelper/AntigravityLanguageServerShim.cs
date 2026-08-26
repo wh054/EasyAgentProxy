@@ -171,7 +171,7 @@ internal static class AntigravityLanguageServerShim
         return Path.Combine(appDirectory, "resources", "app", "extensions", "antigravity", "bin");
     }
 
-    private static string[] RewriteArgs(string[] args)
+    internal static string[] RewriteArgs(string[] args)
     {
         var rewritten = args.ToArray();
         for (var i = 0; i < rewritten.Length - 1; i++)
@@ -179,6 +179,11 @@ internal static class AntigravityLanguageServerShim
             if (rewritten[i].Equals("--cloud_code_endpoint", StringComparison.OrdinalIgnoreCase))
             {
                 rewritten[i + 1] = AntigravityCloudCodeRelay.RelayUrl;
+                i++;
+            }
+            else if (rewritten[i].Equals("--api_server_url", StringComparison.OrdinalIgnoreCase))
+            {
+                rewritten[i + 1] = AntigravityCloudCodeRelay.GenerativeLanguageRelayUrl;
                 i++;
             }
         }
@@ -223,7 +228,7 @@ internal static class AntigravityLanguageServerShim
         return File.Exists(sibling) ? sibling : null;
     }
 
-    private static void PatchCloudCodeUrls(string filePath)
+    internal static void PatchCloudCodeUrls(string filePath)
     {
         var pairs = new[]
         {
@@ -241,7 +246,10 @@ internal static class AntigravityLanguageServerShim
                 "http://xxx@127.0.0.1:18990/drive"),
             new UrlPatch(
                 "https://www.googleapis.com/upload",
-                "http://xxx@127.0.0.1:18990/upload")
+                "http://xxx@127.0.0.1:18990/upload"),
+            new UrlPatch(
+                "https://generativelanguage.googleapis.com",
+                AntigravityCloudCodeRelay.GenerativeLanguageRelayUrl)
         };
         var bytes = File.ReadAllBytes(filePath);
         var encoding = Encoding.ASCII;
