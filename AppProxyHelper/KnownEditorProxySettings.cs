@@ -39,13 +39,16 @@ internal static class KnownEditorProxySettings
     {
         var writtenSettingsPaths = new List<string>();
         var settingsPaths = GetSettingsPaths(executablePath).ToArray();
+        var disableHttp2ForCursor = Path.GetFileName(executablePath)
+            .Equals("Cursor.exe", StringComparison.OrdinalIgnoreCase);
         foreach (var settingsPath in settingsPaths)
         {
             WriteVsCodeStyleSettings(
                 settingsPath,
                 httpProxyUri,
                 antigravityCloudCodeUrl,
-                antigravityIdeLanguageServerPath);
+                antigravityIdeLanguageServerPath,
+                disableHttp2ForCursor);
             writtenSettingsPaths.Add(settingsPath);
         }
 
@@ -188,11 +191,12 @@ internal static class KnownEditorProxySettings
             : Path.Combine(userProfile, ".claude", "settings.json");
     }
 
-    private static void WriteVsCodeStyleSettings(
+    internal static void WriteVsCodeStyleSettings(
         string settingsPath,
         string httpProxyUri,
         string? antigravityCloudCodeUrl,
-        string? antigravityIdeLanguageServerPath)
+        string? antigravityIdeLanguageServerPath,
+        bool disableHttp2ForCursor = false)
     {
         var directory = Path.GetDirectoryName(settingsPath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -204,7 +208,7 @@ internal static class KnownEditorProxySettings
         root["http.proxy"] = httpProxyUri;
         root["http.proxySupport"] = "override";
         root["http.systemCertificates"] = true;
-        root["codeiumDev.languageServerEnv"] = new JsonObject
+        var languageServerEnvironment = new JsonObject
         {
             ["HTTP_PROXY"] = httpProxyUri,
             ["HTTPS_PROXY"] = httpProxyUri,
@@ -215,6 +219,13 @@ internal static class KnownEditorProxySettings
             ["NO_PROXY"] = "localhost,127.0.0.1,::1",
             ["no_proxy"] = "localhost,127.0.0.1,::1"
         };
+        if (disableHttp2ForCursor)
+        {
+            languageServerEnvironment["NODE_USE_ENV_PROXY"] = "1";
+            root["cursor.general.disableHttp2"] = true;
+        }
+
+        root["codeiumDev.languageServerEnv"] = languageServerEnvironment;
 
         if (!string.IsNullOrWhiteSpace(antigravityCloudCodeUrl))
         {

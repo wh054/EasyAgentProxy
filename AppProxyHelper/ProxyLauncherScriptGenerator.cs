@@ -219,6 +219,11 @@ internal static class ProxyLauncherScriptGenerator
         var proxyEnvironmentVariables = resolveClaudeAtLaunch
             ? profile.GetHttpProxyEnvironmentVariables()
             : profile.GetEnvironmentVariables();
+        if (Path.GetFileName(executablePath).Equals("Cursor.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            proxyEnvironmentVariables = proxyEnvironmentVariables.Concat(
+                new[] { new KeyValuePair<string, string>("NODE_USE_ENV_PROXY", "1") });
+        }
         var environmentLines = string.Join(
             Environment.NewLine,
             proxyEnvironmentVariables

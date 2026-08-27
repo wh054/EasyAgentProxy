@@ -13,6 +13,8 @@ internal static class Program
             ("codex dotenv preserves unrelated values and replaces proxy values", CodexDotEnvPreservesUnrelatedValues),
             ("ChatGPT launcher generation creates one proxy entry", ChatGptLauncherGenerationCreatesOneEntry),
             ("shortcut target rebases away from sandbox profile", ShortcutTargetRebasesAwayFromSandboxProfile),
+            ("cursor launcher enables Node environment proxy", CursorLauncherEnablesNodeEnvironmentProxy),
+            ("cursor settings disable custom HTTP2 transport", CursorSettingsDisableCustomHttp2Transport),
             ("claude desktop launcher uses http proxy argument", ClaudeDesktopLauncherUsesHttpProxyArgument),
             ("claude code settings receive http proxy env", ClaudeCodeSettingsReceiveHttpProxyEnv),
             ("antigravity shim routes cloudcode and generative language", AntigravityShimRoutesAllPrimaryEndpoints),
@@ -147,6 +149,48 @@ internal static class Program
             @"C:\Users\me\AppData\Local\Packages\OpenAI.Codex_test\LocalCache\EasyProxy\ChatGPTProxy.vbs",
             rebased,
             "rebased shortcut target");
+    }
+
+    private static void CursorLauncherEnablesNodeEnvironmentProxy()
+    {
+        var profile = ProxyEnvironmentProfile.Create("socks5://127.0.0.1:7890");
+        var script = ProxyLauncherScriptGenerator.BuildScript(
+            @"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe",
+            profile,
+            antigravityRelayScriptPath: null,
+            includeAntigravityLanguageServerShim: false,
+            resolveChatGptAtLaunch: false,
+            resolveClaudeAtLaunch: false);
+
+        AssertContains(script, "set \"NODE_USE_ENV_PROXY=1\"");
+        AssertContains(script, "\"--proxy-server=socks5://127.0.0.1:7890\"");
+    }
+
+    private static void CursorSettingsDisableCustomHttp2Transport()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var settingsPath = Path.Combine(tempDirectory, "settings.json");
+            File.WriteAllText(settingsPath, """
+                {
+                  "KEEP_ME": "1",
+                  "cursor.general.disableHttp2": false
+                }
+                """);
+
+            KnownEditorProxySettings.WriteVsCodeStyleSettings(
+                settingsPath,
+                "http://127.0.0.1:7890",
+                antigravityCloudCodeUrl: null,
+                antigravityIdeLanguageServerPath: null,
+                disableHttp2ForCursor: true);
+
+            var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+            var languageServerEnvironment = root["codeiumDev.languageServerEnv"]!.AsObject();
+            AssertEqual("1", root["KEEP_ME"]!.GetValue<string>(), "existing setting preserved");
+            AssertEqual(true, root["cursor.general.disableHttp2"]!.GetValue<bool>(), "HTTP2 disabled");
+            AssertEqual("1", languageServerEnvironment["NODE_USE_ENV_PROXY"]!.GetValue<string>(), "language server Node proxy");
+        });
     }
 
     private static void ClaudeDesktopLauncherUsesHttpProxyArgument()
