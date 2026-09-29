@@ -267,7 +267,10 @@ internal static class AntigravityCloudCodeRelay
 
         function isStreamingRequest(clientUrl) {
           const raw = clientUrl || "";
-          return raw.includes(":streamGenerateContent") || raw.includes("alt=sse");
+          return raw.includes(":streamGenerateContent")
+            || raw.includes(":generateContent")
+            || raw.includes("alt=sse")
+            || raw.includes("loadCodebaseContext");
         }
 
         function getUpstreamTimeoutMs(clientUrl) {
@@ -381,7 +384,15 @@ internal static class AntigravityCloudCodeRelay
           clientRes.end(cached.body);
         }
 
-        function isSafeToRetry(error, requestCommitted, method) {
+        function isIdempotentOrGenerative(routePath) {
+          // Only replay known read/generation RPCs before any response headers.
+          // A lost generation response can still consume quota on the server.
+          const pathname = String(routePath || "").split("?", 1)[0];
+          return /^\/v1internal:(streamGenerateContent|generateContent|loadCodeAssist|loadCodebaseContext|fetchUserInfo|listExperiments|retrieveUserQuotaSummary|fetchAvailableModels|fetchAdminControls)$/.test(pathname)
+            || /^\/v1(?:beta)?\/models\/[^/]+:(streamGenerateContent|generateContent)$/.test(pathname);
+        }
+
+        function isSafeToRetry(error, requestCommitted, method, routePath) {
           if (["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase())) return true;
           const message = String(error && error.message || "").toLowerCase();
           const connectionSetupFailure = message.includes("before secure tls connection was established")
@@ -389,8 +400,12 @@ internal static class AntigravityCloudCodeRelay
             || message.includes("tls handshake")
             || message.includes("connect timed out");
           if (connectionSetupFailure) return true;
-          if (requestCommitted) return false;
-          return Boolean(error && ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE"].includes(error.code));
+          const isNetworkFailure = Boolean(error && ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE"].includes(error.code))
+            || message.includes("socket hang up")
+            || message.includes("network socket disconnected");
+          if (!isNetworkFailure) return false;
+          if (!requestCommitted || isIdempotentOrGenerative(routePath)) return true;
+          return false;
         }
 
         function retryDelay(attemptIndex) {
@@ -402,6 +417,7 @@ internal static class AntigravityCloudCodeRelay
           let size = 0;
           let ended = false;
           let activeRequest = null;
+          let retryTimer = null;
           clientReq.on("data", (chunk) => {
             size += chunk.length;
             if (size > MAX_BUFFERED_REQUEST_BYTES) {
@@ -419,7 +435,7 @@ internal static class AntigravityCloudCodeRelay
             let attemptIndex = 0;
 
             function attempt() {
-              if (ended) return;
+              if (ended || clientRes.destroyed) return;
               const attemptUpstream = candidates[candidateIndex];
               const attemptHeaders = { ...headers, host: attemptUpstream.hostname, "content-length": String(body.length) };
               let requestCommitted = false;
@@ -474,19 +490,19 @@ internal static class AntigravityCloudCodeRelay
               }
               upstreamReq.on("error", (error) => {
                 if (ended || responseStarted) return;
-                const retryable = isSafeToRetry(error, requestCommitted, clientReq.method);
+                const retryable = isSafeToRetry(error, requestCommitted, clientReq.method, route.path);
                 if (retryable && attemptIndex + 1 < RETRY_ATTEMPTS) {
                   attemptIndex++;
                   const delay = retryDelay(attemptIndex);
-                  log(`[${requestId}] .. retry ${attemptIndex + 1}/${RETRY_ATTEMPTS} after ${delay}ms upstream=${attemptUpstream.hostname} error=${error.message}`);
-                  setTimeout(attempt, delay);
+                  log(`[${requestId}] .. retry ${attemptIndex + 1}/${RETRY_ATTEMPTS} after ${delay}ms elapsed=${Date.now() - startedAt}ms bodyBytes=${body.length} committed=${requestCommitted} upstream=${attemptUpstream.hostname} error=${error.message}`);
+                  retryTimer = setTimeout(attempt, delay);
                   return;
                 }
                 if (retryable && candidateIndex + 1 < candidates.length) {
                   candidateIndex++;
                   attemptIndex = 0;
                   log(`[${requestId}] .. fallback upstream=${candidates[candidateIndex].hostname} error=${error.message}`);
-                  setTimeout(attempt, RETRY_BASE_DELAY_MS);
+                  retryTimer = setTimeout(attempt, RETRY_BASE_DELAY_MS);
                   return;
                 }
                 ended = true;
@@ -512,15 +528,18 @@ internal static class AntigravityCloudCodeRelay
             log(`[${requestId}] xx client aborted ${Date.now() - startedAt}ms`);
           });
           clientRes.on("close", () => {
-            if (!clientRes.writableEnded && activeRequest) {
+            clearTimeout(retryTimer);
+            if (!clientRes.writableEnded) {
               ended = true;
-              activeRequest.destroy(new Error("client closed"));
+              if (activeRequest) activeRequest.destroy(new Error("client closed"));
             }
           });
         }
 
         function createProxiedTlsConnection(upstream, callback) {
           const socket = net.connect(Number(proxy.port || 80), proxy.hostname);
+          socket.setKeepAlive(true, 10000);
+          socket.setNoDelay(true);
           const target = `${upstream.hostname}:443`;
           let completed = false;
           function finish(error, connectedSocket) {
@@ -558,6 +577,8 @@ internal static class AntigravityCloudCodeRelay
             const rest = buffer.subarray(headerEnd + 4);
             if (rest.length) socket.unshift(rest);
             const tlsSocket = tls.connect({ socket, servername: upstream.hostname, ALPNProtocols: ["http/1.1"] });
+            tlsSocket.setKeepAlive(true, 10000);
+            tlsSocket.setNoDelay(true);
             tlsSocket.setTimeout(CONNECT_TIMEOUT_MS, () => {
               const error = new Error(`TLS handshake timed out after ${CONNECT_TIMEOUT_MS}ms: ${target}`);
               error.code = "ETIMEDOUT";

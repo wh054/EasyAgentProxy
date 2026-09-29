@@ -46,8 +46,10 @@ internal static class AntigravityLanguageServerShim
         }
         ApplyProxyEnvironment(startInfo);
 
+        using var job = ChildProcessJob.Create();
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start Antigravity real language server.");
+        job?.AssignProcess(process);
 
         var stdin = ForwardInputAsync(process);
         var stdout = process.StandardOutput.BaseStream.CopyToAsync(Console.OpenStandardOutput());
@@ -112,17 +114,22 @@ internal static class AntigravityLanguageServerShim
         var patchedOriginalPath = Path.Combine(binDirectory, OriginalLanguageServerName);
         var pristineOriginalPath = Path.Combine(binDirectory, PristineLanguageServerName);
 
-        if (!File.Exists(pristineOriginalPath))
-        {
-            File.Copy(
-                File.Exists(patchedOriginalPath) ? patchedOriginalPath : languageServerPath,
-                pristineOriginalPath,
-                overwrite: false);
-        }
+        KillProcessesByPath(patchedOriginalPath, languageServerPath);
 
-        File.Copy(pristineOriginalPath, patchedOriginalPath, overwrite: true);
-        PatchCloudCodeUrls(patchedOriginalPath);
-        File.Copy(shimExecutablePath, languageServerPath, overwrite: true);
+        RetryOnFileLock(() =>
+        {
+            if (!File.Exists(pristineOriginalPath))
+            {
+                File.Copy(
+                    File.Exists(patchedOriginalPath) ? patchedOriginalPath : languageServerPath,
+                    pristineOriginalPath,
+                    overwrite: false);
+            }
+
+            File.Copy(pristineOriginalPath, patchedOriginalPath, overwrite: true);
+            PatchCloudCodeUrls(patchedOriginalPath);
+            File.Copy(shimExecutablePath, languageServerPath, overwrite: true);
+        });
     }
 
     public static string InstallForAntigravityIde(string antigravityIdeExecutablePath)
@@ -137,13 +144,18 @@ internal static class AntigravityLanguageServerShim
             throw new FileNotFoundException("Antigravity IDE language server was not found.", languageServerPath);
         }
 
-        if (!File.Exists(pristineOriginalPath))
-        {
-            File.Copy(languageServerPath, pristineOriginalPath, overwrite: false);
-        }
+        KillProcessesByPath(patchedLanguageServerPath);
 
-        File.Copy(pristineOriginalPath, patchedLanguageServerPath, overwrite: true);
-        PatchCloudCodeUrls(patchedLanguageServerPath);
+        RetryOnFileLock(() =>
+        {
+            if (!File.Exists(pristineOriginalPath))
+            {
+                File.Copy(languageServerPath, pristineOriginalPath, overwrite: false);
+            }
+
+            File.Copy(pristineOriginalPath, patchedLanguageServerPath, overwrite: true);
+            PatchCloudCodeUrls(patchedLanguageServerPath);
+        });
         return patchedLanguageServerPath;
     }
 
@@ -334,4 +346,99 @@ internal static class AntigravityLanguageServerShim
     }
 
     private sealed record UrlPatch(string Source, string Target);
+
+    /// <summary>
+    /// Kills any running processes whose executable path matches one of the specified file paths.
+    /// This cleans up orphan language server processes that were left behind when their parent
+    /// (the shim) was killed without a Job Object binding.
+    /// </summary>
+    private static void KillProcessesByPath(params string[] filePaths)
+    {
+        if (filePaths.Length == 0)
+        {
+            return;
+        }
+
+        var currentPid = Environment.ProcessId;
+        var fullPaths = filePaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(Path.GetFullPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (fullPaths.Count == 0)
+        {
+            return;
+        }
+
+        var killed = false;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentPid || process.HasExited)
+                {
+                    continue;
+                }
+
+                string? modulePath = null;
+                try
+                {
+                    modulePath = process.MainModule?.FileName;
+                }
+                catch
+                {
+                    // Access denied for system/elevated processes — skip.
+                }
+
+                if (string.IsNullOrWhiteSpace(modulePath) || !fullPaths.Contains(modulePath))
+                {
+                    continue;
+                }
+
+                process.Kill();
+                killed = true;
+            }
+            catch
+            {
+                // Best-effort: process may have already exited or we lack permissions.
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        if (killed)
+        {
+            // Give the OS time to release file handles after killing processes.
+            Thread.Sleep(500);
+        }
+    }
+
+    /// <summary>
+    /// Executes a file operation with retry on sharing/lock violations.
+    /// On the first failure, waits briefly for handles to be released, then retries.
+    /// </summary>
+    private static void RetryOnFileLock(Action action, int maxRetries = 2)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                action();
+                return;
+            }
+            catch (IOException ex) when (
+                attempt < maxRetries && IsFileLockError(ex))
+            {
+                Thread.Sleep(500 * (attempt + 1));
+            }
+        }
+    }
+
+    private static bool IsFileLockError(IOException ex)
+    {
+        // ERROR_SHARING_VIOLATION (0x80070020) or ERROR_LOCK_VIOLATION (0x80070021)
+        var hr = ex.HResult;
+        return hr == unchecked((int)0x80070020) || hr == unchecked((int)0x80070021);
+    }
 }

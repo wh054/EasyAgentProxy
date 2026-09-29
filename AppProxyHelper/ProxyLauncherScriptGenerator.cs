@@ -285,20 +285,6 @@ internal static class ProxyLauncherScriptGenerator
 
             $argumentList = @($Arguments | Where-Object { $_ })
 
-            try {
-                if ($argumentList.Count -gt 0) {
-                    Start-Process -FilePath $ExecutablePath -ArgumentList $argumentList -ErrorAction Stop | Out-Null
-                } else {
-                    Start-Process -FilePath $ExecutablePath -ErrorAction Stop | Out-Null
-                }
-                exit 0
-            } catch {
-                # Some MSIX packages (e.g. OpenAI.Codex 26.707+) deny launching the exe
-                # directly from WindowsApps. Fall back to package activation, which still
-                # forwards the command-line arguments (proxy env vars are NOT inherited
-                # on this path; the Chromium --proxy-server argument carries the proxy).
-            }
-
             $package = $null
             $nameMatch = [regex]::Match($ExecutablePath, '\\WindowsApps\\(?<name>[^_\\]+)_')
             if ($nameMatch.Success) {
@@ -310,18 +296,15 @@ internal static class ProxyLauncherScriptGenerator
                     $_.InstallLocation -and $ExecutablePath.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
                 } | Select-Object -First 1
             }
-            if (-not $package) {
-                Write-Error "No installed MSIX package contains: $ExecutablePath"
-                exit 1
-            }
 
-            $appId = 'App'
-            try {
-                $manifestApp = (Get-AppxPackageManifest -Package $package.PackageFullName).Package.Applications.Application | Select-Object -First 1
-                if ($manifestApp -and $manifestApp.Id) { $appId = $manifestApp.Id }
-            } catch {}
+            if ($package) {
+                $appId = 'App'
+                try {
+                    $manifestApp = (Get-AppxPackageManifest -Package $package.PackageFullName).Package.Applications.Application | Select-Object -First 1
+                    if ($manifestApp -and $manifestApp.Id) { $appId = $manifestApp.Id }
+                } catch {}
 
-            Add-Type -TypeDefinition @'
+                Add-Type -TypeDefinition @'
             using System;
             using System.Runtime.InteropServices;
             namespace EasyProxy {
@@ -342,8 +325,26 @@ internal static class ProxyLauncherScriptGenerator
             }
             '@
 
-            $appUserModelId = "$($package.PackageFamilyName)!$appId"
-            [EasyProxy.PackagedAppLauncher]::Launch($appUserModelId, ($argumentList -join ' ')) | Out-Null
+                try {
+                    $appUserModelId = "$($package.PackageFamilyName)!$appId"
+                    [EasyProxy.PackagedAppLauncher]::Launch($appUserModelId, ($argumentList -join ' ')) | Out-Null
+                    exit 0
+                } catch {
+                    # Fall back to direct launch if package activation fails
+                }
+            }
+
+            try {
+                if ($argumentList.Count -gt 0) {
+                    Start-Process -FilePath $ExecutablePath -ArgumentList $argumentList -ErrorAction Stop | Out-Null
+                } else {
+                    Start-Process -FilePath $ExecutablePath -ErrorAction Stop | Out-Null
+                }
+                exit 0
+            } catch {
+                Write-Error "Failed to launch $($ExecutablePath): $_"
+                exit 1
+            }
             """;
     }
 

@@ -20,7 +20,8 @@ internal static class Program
             ("antigravity shim routes cloudcode and generative language", AntigravityShimRoutesAllPrimaryEndpoints),
             ("antigravity binary patch routes generative language", AntigravityBinaryPatchRoutesGenerativeLanguage),
             ("antigravity relay includes generative route and bounded retries", AntigravityRelayIncludesCoverageAndRetries),
-            ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens)
+            ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens),
+            ("packaged app launch helper prioritizes package activation", PackagedAppLaunchHelperPrioritizesPackageActivation)
         };
 
         var failures = 0;
@@ -289,7 +290,17 @@ internal static class Program
         AssertContains(script, "function proxyBufferedWithRetries");
         AssertContains(script, "function isSafeToRetry");
         AssertContains(script, "requestCommitted");
+        AssertContains(script, "isIdempotentOrGenerative");
+        AssertContains(script, "socket.setKeepAlive(true, 10000);");
+        AssertContains(script, "tlsSocket.setKeepAlive(true, 10000);");
         AssertContains(script, "if (completed)");
+
+        WithTempDirectory(tempDirectory =>
+        {
+            var deployedPath = AntigravityCloudCodeRelay.WriteRelayScript(tempDirectory);
+            AssertEqual(true, File.Exists(deployedPath), "relay script exists");
+            AssertEqual(script, File.ReadAllText(deployedPath), "relay script content matches");
+        });
     }
 
     private static void ContextMenuCommandsPassExplorerDirectoryTokens()
@@ -304,6 +315,20 @@ internal static class Program
         AssertContains(commandForBackground, "\"%V\"");
         AssertContains(commandForDirectory, "\"%1\"");
         AssertContains(commandForBackground, "cmd.exe /d /c");
+    }
+
+    private static void PackagedAppLaunchHelperPrioritizesPackageActivation()
+    {
+        var script = ProxyLauncherScriptGenerator.BuildPackagedAppLaunchHelperScript();
+        AssertContains(script, "if ($package)");
+        AssertContains(script, "[EasyProxy.PackagedAppLauncher]::Launch");
+        AssertContains(script, "Write-Error \"Failed to launch $($ExecutablePath): $_\"");
+        var packageIndex = script.IndexOf("if ($package)", StringComparison.Ordinal);
+        var fallbackStartProcessIndex = script.IndexOf("Start-Process -FilePath $ExecutablePath", StringComparison.Ordinal);
+        if (packageIndex >= fallbackStartProcessIndex)
+        {
+            throw new InvalidOperationException("Packaged app helper must attempt package activation before fallback Start-Process.");
+        }
     }
 
     private static void WithTempDirectory(Action<string> body)

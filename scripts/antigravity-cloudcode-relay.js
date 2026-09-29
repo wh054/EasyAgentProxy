@@ -11,6 +11,8 @@ const proxy = new URL(process.env.EASYPROXY_HTTP_PROXY || "http://127.0.0.1:7890
 function createProxiedTlsConnection(options, callback) {
   const proxyPort = Number(proxy.port || 80);
   const socket = net.connect(proxyPort, proxy.hostname);
+  socket.setKeepAlive(true, 10000);
+  socket.setNoDelay(true);
   const target = `${upstream.hostname}:443`;
 
   socket.once("connect", () => {
@@ -49,6 +51,8 @@ function createProxiedTlsConnection(options, callback) {
       servername: upstream.hostname,
       ALPNProtocols: ["http/1.1"],
     });
+    tlsSocket.setKeepAlive(true, 10000);
+    tlsSocket.setNoDelay(true);
     callback(null, tlsSocket);
   });
 
