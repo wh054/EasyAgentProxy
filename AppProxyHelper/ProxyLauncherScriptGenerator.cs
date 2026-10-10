@@ -396,17 +396,17 @@ internal static class ProxyLauncherScriptGenerator
             + Environment.NewLine;
     }
 
-    private static string BuildAntigravityRelayLaunchLine(
+    internal static string BuildAntigravityRelayLaunchLine(
         string executablePath,
         string relayScriptPath,
         string httpProxyUri,
         bool includeAntigravityLanguageServerShim)
     {
         var escapedRelayPath = relayScriptPath.Replace("'", "''", StringComparison.Ordinal);
-        var escapedRelayFileName = Path.GetFileName(relayScriptPath).Replace("'", "''", StringComparison.Ordinal);
         var escapedWorkingDirectory = Path.GetDirectoryName(relayScriptPath)?.Replace("'", "''", StringComparison.Ordinal) ?? ".";
         var escapedProxyUri = httpProxyUri.Replace("'", "''", StringComparison.Ordinal);
         var escapedHealthUrl = AntigravityCloudCodeRelay.HealthUrl.Replace("'", "''", StringComparison.Ordinal);
+        var escapedRuntimeFileName = AntigravityCloudCodeRelay.RuntimeFileName.Replace("'", "''", StringComparison.Ordinal);
         var shimPath = includeAntigravityLanguageServerShim
             ? AntigravityLanguageServerShim.GetCurrentExecutablePath()
             : null;
@@ -420,11 +420,9 @@ internal static class ProxyLauncherScriptGenerator
         return "set \"EASYPROXY_HTTP_PROXY=" + EscapeSetValue(httpProxyUri) + "\"" + Environment.NewLine
             + shimLines
             + "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-            + "$relay = '"
+            + "$ErrorActionPreference = 'Stop'; $relay = '"
             + escapedRelayPath
-            + "'; $relayFull = [System.IO.Path]::GetFullPath($relay); $relayName = '"
-            + escapedRelayFileName
-            + "'; $healthUrl = '"
+            + "'; $relayFull = [System.IO.Path]::GetFullPath($relay); $healthUrl = '"
             + escapedHealthUrl
             + "'; "
             + "$node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source; "
@@ -438,24 +436,46 @@ internal static class ProxyLauncherScriptGenerator
             + "if (-not $node) { $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source }; "
             + "if (-not $node) { Write-Error 'Node.js installation finished, but node.exe was not found. Reopen this launcher after Windows refreshes PATH.'; exit 1 } "
             + "}; "
+            + "$runtimeHash = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash; "
+            + "$runtimeDirectory = Join-Path (Join-Path (Split-Path -Parent $relayFull) 'runtime') $runtimeHash; "
+            + "$relayRuntime = Join-Path $runtimeDirectory '"
+            + escapedRuntimeFileName
+            + "'; "
+            + "if (-not (Test-Path -LiteralPath $relayRuntime -PathType Leaf)) { "
+            + "[System.IO.Directory]::CreateDirectory($runtimeDirectory) | Out-Null; "
+            + "$stagingRuntime = $relayRuntime + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'; "
+            + "try { Copy-Item -LiteralPath $node -Destination $stagingRuntime; "
+            + "if ((Get-FileHash -LiteralPath $stagingRuntime -Algorithm SHA256).Hash -ne $runtimeHash) { throw 'Node.js changed while preparing the relay runtime. Run this launcher again.' }; "
+            + "try { Move-Item -LiteralPath $stagingRuntime -Destination $relayRuntime } "
+            + "catch { if (-not (Test-Path -LiteralPath $relayRuntime -PathType Leaf)) { throw } } "
+            + "} finally { if (Test-Path -LiteralPath $stagingRuntime) { Remove-Item -LiteralPath $stagingRuntime -Force } }; "
+            + "}; "
             + "$healthy = $false; $existingHealthy = $false; "
             + "$listener = Get-NetTCPConnection -LocalPort 18990 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
             + "if ($listener) { "
             + "$proc = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess) -ErrorAction SilentlyContinue; "
             + "$cmd = if ($proc) { [string]$proc.CommandLine } else { '' }; "
-            + "$isRelay = $cmd -like ('*' + $relayName + '*'); "
-            + "$usesCurrentRelay = $cmd -like ('*' + $relayFull + '*'); "
+            + "$scriptToken = ([char]34) + $relayFull + ([char]34); "
+            + "$executableToken = '(?:' + ([char]34) + '[^' + ([char]34) + ']+' + ([char]34) + '|\\S+)'; "
+            + "$isRelay = $proc -and ($proc.Name -ieq 'node.exe' -or $proc.Name -ieq '"
+            + escapedRuntimeFileName
+            + "') -and [regex]::IsMatch($cmd, '^\\s*' + $executableToken + '\\s+' + [regex]::Escape($scriptToken) + '(?:\\s|$)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase); "
+            + "if (-not $isRelay) { Write-Error ('Port 18990 is occupied by an unrecognized process: pid ' + $listener.OwningProcess); exit 1 }; "
+            + "$usesCurrentRuntime = [string]::Equals([string]$proc.ExecutablePath, $relayRuntime, [System.StringComparison]::OrdinalIgnoreCase); "
             + "$procInfo = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue; "
+            + "if (-not $procInfo -or -not [string]::Equals([string]$procInfo.Path, [string]$proc.ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase) -or -not $proc.CreationDate -or [Math]::Abs(($procInfo.StartTime - [datetime]$proc.CreationDate).TotalSeconds) -gt 1) { Write-Error 'Relay process changed during ownership validation. Run this launcher again.'; exit 1 }; "
             + "$scriptInfo = Get-Item -LiteralPath $relayFull -ErrorAction SilentlyContinue; "
             + "$isOld = $procInfo -and $scriptInfo -and $procInfo.StartTime -lt $scriptInfo.LastWriteTime; "
             + "try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false }; "
-            + "if ($isRelay -and (-not $healthy -or $isOld -or -not $usesCurrentRelay)) { Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
+            + "if (-not $healthy -or $isOld -or -not $usesCurrentRuntime) { "
+            + "$confirmed = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess) -ErrorAction SilentlyContinue; "
+            + "if (-not $confirmed -or $confirmed.CreationDate -ne $proc.CreationDate -or -not [string]::Equals([string]$confirmed.ExecutablePath, [string]$proc.ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase) -or $confirmed.CommandLine -ne $cmd) { Write-Error 'Relay process changed before restart. Run this launcher again.'; exit 1 }; "
+            + "Stop-Process -Id $listener.OwningProcess -Force; Start-Sleep -Milliseconds 300 } "
             + "elseif ($healthy) { $existingHealthy = $true } "
-            + "else { Write-Error ('Port 18990 is occupied by pid ' + $listener.OwningProcess + ': ' + $cmd); exit 1 } "
             + "}; "
             + "if (-not $existingHealthy) { $env:EASYPROXY_HTTP_PROXY = '"
             + escapedProxyUri
-            + "'; Start-Process -WindowStyle Hidden -FilePath $node -WorkingDirectory '"
+            + "'; Start-Process -WindowStyle Hidden -FilePath $relayRuntime -WorkingDirectory '"
             + escapedWorkingDirectory
             + "' -ArgumentList (([char]34) + $relayFull + ([char]34)); $healthy = $false; for ($i = 0; $i -lt 20 -and -not $healthy; $i++) { Start-Sleep -Milliseconds 250; try { $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 3; $healthy = ($response.StatusCode -eq 200 -and $response.Content -match 'easyproxy-antigravity-relay') } catch { $healthy = $false } }; "
             + "if (-not $healthy) { Write-Error 'Antigravity CloudCode relay failed health check on 127.0.0.1:18990.'; exit 1 } }\"" + Environment.NewLine

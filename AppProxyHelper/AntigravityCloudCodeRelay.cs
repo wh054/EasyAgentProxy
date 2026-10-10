@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace AppProxyHelper;
 
@@ -13,6 +16,7 @@ internal static class AntigravityCloudCodeRelay
     public const string DefaultUpstream = "https://daily-cloudcode-pa.googleapis.com";
     public const string GenerativeLanguagePathPrefix = "/__easyproxy/gemini";
     public const string GenerativeLanguageRelayUrl = RelayUrl + GenerativeLanguagePathPrefix;
+    public const string RuntimeFileName = "EasyProxyRelayHost.exe";
 
     public static bool IsAntigravityExecutable(string executablePath)
     {
@@ -34,10 +38,13 @@ internal static class AntigravityCloudCodeRelay
     {
         Directory.CreateDirectory(outputDirectory);
         var relayScriptPath = Path.Combine(outputDirectory, "Antigravity CloudCode Relay.js");
-        File.WriteAllText(
-            relayScriptPath,
-            ScriptContent,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        if (!File.Exists(relayScriptPath) || File.ReadAllText(relayScriptPath) != ScriptContent)
+        {
+            File.WriteAllText(
+                relayScriptPath,
+                ScriptContent,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
         return relayScriptPath;
     }
 
@@ -56,22 +63,38 @@ internal static class AntigravityCloudCodeRelay
 
     public static async Task EnsureStartedAsync(string httpProxyUri, AppLogger logger, CancellationToken cancellationToken)
     {
-        if (await IsRelayHealthyAsync(cancellationToken))
-        {
-            logger.Info($"Antigravity CloudCode relay 已在监听: {RelayUrl}");
-            return;
-        }
-
         var nodePath = await EnsureNodeAsync(logger, cancellationToken);
         var relayScriptPath = WriteSharedRelayScript();
         var relayDirectory = Path.GetDirectoryName(relayScriptPath) ?? GetRelayDirectory();
+        var runtimePath = PrepareRelayRuntime(nodePath, relayDirectory);
         if (IsRelayListening())
         {
-            throw new InvalidOperationException(
-                $"Antigravity CloudCode relay port is already in use, but health check failed: {RelayUrl}");
+            var listener = await GetRelayListenerAsync(cancellationToken);
+            if (listener is null || !IsRelayProcess(listener.ExecutablePath, listener.CommandLine, relayScriptPath))
+            {
+                throw new InvalidOperationException($"Antigravity CloudCode relay port is occupied by another process: {RelayUrl}");
+            }
+
+            using var existing = Process.GetProcessById(listener.Id);
+            if (existing.StartTime.ToUniversalTime().Ticks != listener.StartTicks
+                || !string.Equals(existing.MainModule?.FileName, listener.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Antigravity CloudCode relay process changed during startup. Please retry.");
+            }
+            var usesCurrentRuntime = string.Equals(listener.ExecutablePath, runtimePath, StringComparison.OrdinalIgnoreCase);
+            var scriptIsCurrent = existing.StartTime.ToUniversalTime() >= File.GetLastWriteTimeUtc(relayScriptPath);
+            if (usesCurrentRuntime && scriptIsCurrent && await IsRelayHealthyAsync(cancellationToken))
+            {
+                logger.Info($"Antigravity CloudCode relay 已在监听: {RelayUrl} ({RuntimeFileName})");
+                return;
+            }
+
+            logger.Info($"切换 Antigravity CloudCode relay 到独立运行程序: pid={existing.Id}");
+            existing.Kill();
+            await existing.WaitForExitAsync(cancellationToken);
         }
 
-        var startInfo = new ProcessStartInfo(nodePath)
+        var startInfo = new ProcessStartInfo(runtimePath)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -83,7 +106,7 @@ internal static class AntigravityCloudCodeRelay
         startInfo.Environment["CLOUDCODE_UPSTREAM"] = DefaultUpstream;
 
         logger.Info($"启动 Antigravity CloudCode relay: {RelayUrl} -> {DefaultUpstream}");
-        var process = Process.Start(startInfo)
+        using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("无法启动 Antigravity CloudCode relay。");
 
         if (!await WaitForRelayHealthyAsync(cancellationToken))
@@ -91,6 +114,86 @@ internal static class AntigravityCloudCodeRelay
             throw new InvalidOperationException($"Antigravity CloudCode relay 未能监听 {RelayUrl}。pid={process.Id}");
         }
     }
+
+    public static string PrepareRelayRuntime(string nodePath, string relayDirectory)
+    {
+        using var source = File.OpenRead(nodePath);
+        var hash = Convert.ToHexString(SHA256.HashData(source));
+        var runtimeDirectory = Path.Combine(Path.GetFullPath(relayDirectory), "runtime", hash);
+        Directory.CreateDirectory(runtimeDirectory);
+        var runtimePath = Path.Combine(runtimeDirectory, RuntimeFileName);
+        if (File.Exists(runtimePath))
+        {
+            return runtimePath;
+        }
+
+        // Publish atomically; a new Node build gets its own path so an active host
+        // never needs to be overwritten or shut down just to copy the runtime.
+        var temporaryPath = runtimePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.Copy(nodePath, temporaryPath);
+            try
+            {
+                File.Move(temporaryPath, runtimePath);
+            }
+            catch (IOException) when (File.Exists(runtimePath))
+            {
+                // Another launcher published the same runtime first.
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+        return runtimePath;
+    }
+
+    internal static bool IsRelayProcess(string? executablePath, string? commandLine, string relayScriptPath)
+    {
+        var name = Path.GetFileName(executablePath);
+        return (string.Equals(name, "node.exe", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, RuntimeFileName, StringComparison.OrdinalIgnoreCase))
+            && Regex.IsMatch(commandLine ?? "",
+                "^\\s*(?:\"[^\"]+\"|\\S+)\\s+\"" + Regex.Escape(Path.GetFullPath(relayScriptPath)) + "\"(?:\\s|$)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static async Task<RelayListener?> GetRelayListenerAsync(CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add(
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            + "$listener = Get-NetTCPConnection -LocalPort 18990 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            + "if ($listener) { $proc = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $listener.OwningProcess); "
+            + "$info = Get-Process -Id $listener.OwningProcess; "
+            + "[pscustomobject]@{ Id = $listener.OwningProcess; ExecutablePath = $proc.ExecutablePath; CommandLine = $proc.CommandLine; "
+            + "StartTicks = $info.StartTime.ToUniversalTime().Ticks } | ConvertTo-Json -Compress }");
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Unable to inspect the Antigravity CloudCode relay listener.");
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        var output = await outputTask;
+        await errorTask;
+        return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output)
+            ? JsonSerializer.Deserialize<RelayListener>(output)
+            : null;
+    }
+
+    private sealed record RelayListener(int Id, string? ExecutablePath, string? CommandLine, long StartTicks);
 
     private static async Task<bool> WaitForRelayHealthyAsync(CancellationToken cancellationToken)
     {

@@ -1,4 +1,5 @@
 using AppProxyHelper;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 
 internal static class Program
@@ -20,6 +21,10 @@ internal static class Program
             ("antigravity shim routes cloudcode and generative language", AntigravityShimRoutesAllPrimaryEndpoints),
             ("antigravity binary patch routes generative language", AntigravityBinaryPatchRoutesGenerativeLanguage),
             ("antigravity relay includes generative route and bounded retries", AntigravityRelayIncludesCoverageAndRetries),
+            ("antigravity relay runtime copies and reuses a dedicated host", AntigravityRelayRuntimeCopiesAndReusesDedicatedHost),
+            ("antigravity relay runtime separates changed Node versions", AntigravityRelayRuntimeSeparatesChangedNodeVersions),
+            ("antigravity relay launcher starts the dedicated runtime", AntigravityRelayLauncherStartsDedicatedRuntime),
+            ("antigravity relay process identification requires its entry script", AntigravityRelayProcessIdentificationRequiresEntryScript),
             ("context menu commands pass explorer directory tokens", ContextMenuCommandsPassExplorerDirectoryTokens),
             ("packaged app launch helper prioritizes package activation", PackagedAppLaunchHelperPrioritizesPackageActivation)
         };
@@ -300,7 +305,101 @@ internal static class Program
             var deployedPath = AntigravityCloudCodeRelay.WriteRelayScript(tempDirectory);
             AssertEqual(true, File.Exists(deployedPath), "relay script exists");
             AssertEqual(script, File.ReadAllText(deployedPath), "relay script content matches");
+
+            var unchangedTimestamp = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(deployedPath, unchangedTimestamp);
+            AssertEqual(deployedPath, AntigravityCloudCodeRelay.WriteRelayScript(tempDirectory), "existing relay script path");
+            AssertEqual(unchangedTimestamp, File.GetLastWriteTimeUtc(deployedPath), "unchanged relay script timestamp");
+
+            File.WriteAllText(deployedPath, "old relay script");
+            AntigravityCloudCodeRelay.WriteRelayScript(tempDirectory);
+            AssertEqual(script, File.ReadAllText(deployedPath), "changed relay script refreshed");
         });
+    }
+
+    private static void AntigravityRelayRuntimeCopiesAndReusesDedicatedHost()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var nodePath = Path.Combine(tempDirectory, "node.exe");
+            var relayDirectory = Path.Combine(tempDirectory, "relay");
+            var nodeBytes = new byte[] { 0x4d, 0x5a, 0, 17, 29, 255 };
+            File.WriteAllBytes(nodePath, nodeBytes);
+            var sourceTimestamp = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(nodePath, sourceTimestamp);
+
+            var runtimePath = AntigravityCloudCodeRelay.PrepareRelayRuntime(nodePath, relayDirectory);
+            var nodeHash = Convert.ToHexString(SHA256.HashData(nodeBytes));
+            AssertEqual("EasyProxyRelayHost.exe", Path.GetFileName(runtimePath), "dedicated host file name");
+            AssertEqual(
+                Path.Combine(relayDirectory, "runtime", nodeHash, AntigravityCloudCodeRelay.RuntimeFileName),
+                runtimePath,
+                "runtime isolated by Node content hash");
+            AssertEqual(true, nodeBytes.SequenceEqual(File.ReadAllBytes(runtimePath)), "runtime bytes match Node");
+
+            var runtimeTimestamp = new DateTime(2002, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(runtimePath, runtimeTimestamp);
+            AssertEqual(runtimePath, AntigravityCloudCodeRelay.PrepareRelayRuntime(nodePath, relayDirectory), "existing runtime path reused");
+            AssertEqual(runtimeTimestamp, File.GetLastWriteTimeUtc(runtimePath), "unchanged runtime timestamp");
+            AssertEqual(true, nodeBytes.SequenceEqual(File.ReadAllBytes(nodePath)), "original Node bytes preserved");
+            AssertEqual(sourceTimestamp, File.GetLastWriteTimeUtc(nodePath), "original Node timestamp preserved");
+        });
+    }
+
+    private static void AntigravityRelayRuntimeSeparatesChangedNodeVersions()
+    {
+        WithTempDirectory(tempDirectory =>
+        {
+            var nodePath = Path.Combine(tempDirectory, "node.exe");
+            var relayDirectory = Path.Combine(tempDirectory, "relay");
+            var originalBytes = new byte[] { 0x4d, 0x5a, 1, 2, 3 };
+            var updatedBytes = new byte[] { 0x4d, 0x5a, 4, 5, 6 };
+            File.WriteAllBytes(nodePath, originalBytes);
+            var originalRuntimePath = AntigravityCloudCodeRelay.PrepareRelayRuntime(nodePath, relayDirectory);
+
+            File.WriteAllBytes(nodePath, updatedBytes);
+            var updatedRuntimePath = AntigravityCloudCodeRelay.PrepareRelayRuntime(nodePath, relayDirectory);
+            AssertEqual(false, originalRuntimePath == updatedRuntimePath, "updated Node uses a new runtime path");
+            AssertEqual(true, updatedBytes.SequenceEqual(File.ReadAllBytes(updatedRuntimePath)), "updated runtime uses current Node bytes");
+            AssertEqual(true, originalBytes.SequenceEqual(File.ReadAllBytes(originalRuntimePath)), "previous runtime remains available");
+        });
+    }
+
+    private static void AntigravityRelayLauncherStartsDedicatedRuntime()
+    {
+        var launchLine = ProxyLauncherScriptGenerator.BuildAntigravityRelayLaunchLine(
+            @"C:\Program Files\Antigravity\Antigravity.exe",
+            @"C:\Users\me\AppData\Local\EasyProxy\AntigravityRelay\Antigravity CloudCode Relay.js",
+            "http://127.0.0.1:7890",
+            includeAntigravityLanguageServerShim: false);
+
+        AssertContains(launchLine, AntigravityCloudCodeRelay.RuntimeFileName);
+        AssertContains(launchLine, "-FilePath $relayRuntime");
+        AssertDoesNotContain(launchLine, "-FilePath $node");
+    }
+
+    private static void AntigravityRelayProcessIdentificationRequiresEntryScript()
+    {
+        var relayPath = @"C:\Users\me\AppData\Local\EasyProxy\AntigravityRelay\Antigravity CloudCode Relay.js";
+        var nodePath = @"C:\Program Files\nodejs\node.exe";
+        var runtimePath = @"C:\Users\me\AppData\Local\EasyProxy\AntigravityRelay\runtime\ABC\EasyProxyRelayHost.exe";
+        var cases = new (string Name, string? Executable, string? CommandLine, bool Expected)[]
+        {
+            ("legacy Node relay", nodePath, $"\"{nodePath}\" \"{relayPath}\"", true),
+            ("dedicated runtime relay", runtimePath, $"\"{runtimePath}\" \"{relayPath}\"", true),
+            ("unrelated executable", @"C:\Windows\System32\cmd.exe", $"cmd.exe \"{relayPath}\"", false),
+            ("relay path only in a later argument", nodePath, $"\"{nodePath}\" \"C:\\work\\server.js\" \"{relayPath}\"", false),
+            ("relay file name prefix", nodePath, $"\"{nodePath}\" \"{relayPath}.backup\"", false),
+            ("missing process metadata", null, null, false)
+        };
+
+        foreach (var testCase in cases)
+        {
+            AssertEqual(
+                testCase.Expected,
+                AntigravityCloudCodeRelay.IsRelayProcess(testCase.Executable, testCase.CommandLine, relayPath),
+                testCase.Name);
+        }
     }
 
     private static void ContextMenuCommandsPassExplorerDirectoryTokens()

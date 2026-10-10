@@ -147,6 +147,8 @@ Antigravity / Antigravity IDE
 
 relay 脚本和脱敏日志位于 `%LOCALAPPDATA%\EasyProxy\AntigravityRelay`。两个应用可以复用同一个健康 relay。
 
+Relay 使用专用运行程序 `EasyProxyRelayHost.exe`，避免被按 `node` 名称清理进程的操作误杀。EasyProxy 从本机 Node.js 复制运行程序到 `AntigravityRelay\runtime\<SHA256>`，Node.js 更新后使用新的目录；启动时会把已确认的旧 Node Relay 切换到专用运行程序。升级 EasyProxy 后需更新已有代理启动入口。
+
 - Antigravity：备份原始 language server，并安装由 EasyProxy 主程序承载的 shim。
 - Antigravity IDE：不覆盖原始 `language_server_windows_x64.exe`，而是生成 `.easyproxy-pristine.exe` 和 `.easyproxy-patched.exe` 旁路副本，并通过 settings 指向 patched 副本。
 - 如果没有 Node.js，启动脚本会尝试通过 `winget` 安装 Node.js LTS；没有 `winget` 时需要手动安装。
