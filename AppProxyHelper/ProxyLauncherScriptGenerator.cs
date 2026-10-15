@@ -32,10 +32,21 @@ internal static class ProxyLauncherScriptGenerator
             throw new FileNotFoundException("目标 exe 不存在。", fullExecutablePath);
         }
 
+        var isSteam = TargetApplicationCatalog.IsSteamExecutable(fullExecutablePath);
+        if (isSteam)
+        {
+            SteamProxyCli.ValidateProxyUri(proxyUri);
+        }
+
         var profile = ProxyEnvironmentProfile.Create(proxyUri);
         if (!ProxyEndpoint.IsSupportedScheme(profile.Endpoint.Scheme))
         {
             throw new InvalidOperationException("proxyUri 只支持 http、https、socks 或 socks5。");
+        }
+
+        if (isSteam)
+        {
+            return CreateSteamScripts(fullExecutablePath, profile, outputDirectory, createShortcuts);
         }
 
         var directory = string.IsNullOrWhiteSpace(outputDirectory)
@@ -134,6 +145,126 @@ internal static class ProxyLauncherScriptGenerator
         return scriptPath;
     }
 
+    private static IReadOnlyList<string> CreateSteamScripts(
+        string executablePath,
+        ProxyEnvironmentProfile profile,
+        string? outputDirectory,
+        bool createShortcuts)
+    {
+        var (helperExecutablePath, helperAssemblyPath) = ResolveSteamHelperCommand();
+        var script = BuildSteamScript(executablePath, profile, helperExecutablePath, helperAssemblyPath);
+        var useDefaultDirectory = string.IsNullOrWhiteSpace(outputDirectory);
+        var directory = useDefaultDirectory
+            ? GetDefaultOutputDirectory(executablePath, "Steam")
+            : Path.GetFullPath(outputDirectory!);
+
+        string WriteScripts(string destination)
+        {
+            Directory.CreateDirectory(destination);
+            var scriptPath = Path.Combine(destination, "SteamProxy.cmd");
+            var hiddenLauncherPath = Path.ChangeExtension(scriptPath, ".vbs");
+            File.WriteAllText(scriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.WriteAllText(hiddenLauncherPath, BuildSteamHiddenLauncherScript(), Encoding.Unicode);
+            if (createShortcuts)
+            {
+                PointShortcutsToScript(executablePath, "Steam", hiddenLauncherPath);
+            }
+
+            return scriptPath;
+        }
+
+        try
+        {
+            return new[] { WriteScripts(directory) };
+        }
+        catch (Exception ex) when (useDefaultDirectory && (ex is UnauthorizedAccessException or IOException))
+        {
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                throw;
+            }
+
+            return new[] { WriteScripts(Path.Combine(localAppData, "EasyProxy", "Steam")) };
+        }
+    }
+
+    internal static string BuildSteamScript(
+        string executablePath,
+        ProxyEnvironmentProfile profile,
+        string helperExecutablePath,
+        string? helperAssemblyPath = null)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(executablePath))
+            ?? throw new InvalidOperationException("无法确定 Steam 安装目录。");
+        var proxyUri = profile.Endpoint.ToUriString();
+        SteamProxyCli.ValidateProxyUri(proxyUri);
+        foreach (var value in new[] { executablePath, directory, proxyUri, helperExecutablePath, helperAssemblyPath })
+        {
+            if (value?.Any(character => character is '"' or '\r' or '\n' or '\0') == true)
+            {
+                throw new InvalidOperationException("Steam 启动参数不能包含引号或换行控制字符。");
+            }
+        }
+
+        var assemblyLine = helperAssemblyPath is null
+            ? ""
+            : $"set \"EASYPROXY_STEAM_ASSEMBLY={EscapeSetValue(helperAssemblyPath)}\"{Environment.NewLine}";
+        var assemblyArgument = helperAssemblyPath is null ? "" : "\"%EASYPROXY_STEAM_ASSEMBLY%\" ";
+        // Quoted SET values protect CMD metacharacters; percent signs are doubled at generation,
+        // and delayed expansion is disabled so literal exclamation marks survive both parsing stages.
+        return "@echo off" + Environment.NewLine
+            + "setlocal EnableExtensions DisableDelayedExpansion" + Environment.NewLine
+            + "chcp 65001 >nul" + Environment.NewLine
+            + $"set \"EASYPROXY_STEAM_HELPER={EscapeSetValue(helperExecutablePath)}\"" + Environment.NewLine
+            + assemblyLine
+            + $"set \"EASYPROXY_STEAM_TARGET={EscapeSetValue(executablePath)}\"" + Environment.NewLine
+            + $"set \"EASYPROXY_STEAM_DIRECTORY={EscapeSetValue(directory)}\"" + Environment.NewLine
+            + $"set \"EASYPROXY_STEAM_PROXY={EscapeSetValue(proxyUri)}\"" + Environment.NewLine
+            + "cd /d \"%EASYPROXY_STEAM_DIRECTORY%\"" + Environment.NewLine
+            + "if errorlevel 1 exit /b 1" + Environment.NewLine
+            + "\"%EASYPROXY_STEAM_HELPER%\" " + assemblyArgument
+            + "steam launch --target \"%EASYPROXY_STEAM_TARGET%\" --proxy \"%EASYPROXY_STEAM_PROXY%\"" + Environment.NewLine
+            + "exit /b %ERRORLEVEL%" + Environment.NewLine;
+    }
+
+    private static (string ExecutablePath, string? AssemblyPath) ResolveSteamHelperCommand()
+    {
+        var processPath = Environment.ProcessPath;
+        var assemblyPath = typeof(ProxyLauncherScriptGenerator).Assembly.Location;
+        if (!string.IsNullOrWhiteSpace(processPath)
+            && Path.GetFileName(processPath).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(assemblyPath))
+        {
+            // Retain the exact SDK host, including a repository-local runtime which an apphost
+            // might not discover when no matching global .NET runtime is installed.
+            return (processPath, assemblyPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(processPath)
+            && Path.GetFileName(processPath).Equals("EasyProxy.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return (processPath, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(assemblyPath))
+        {
+            var appHostPath = Path.ChangeExtension(assemblyPath, ".exe");
+            if (File.Exists(appHostPath))
+            {
+                return (appHostPath, null);
+            }
+
+            var dotnetPath = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+            if (!string.IsNullOrWhiteSpace(dotnetPath) && File.Exists(dotnetPath))
+            {
+                return (dotnetPath, assemblyPath);
+            }
+        }
+
+        throw new InvalidOperationException("无法定位 EasyProxy 启动程序，请从完整的 EasyProxy 程序目录运行后重新生成 Steam 入口。");
+    }
+
     private static string GetDefaultOutputDirectory(string executablePath, string displayName)
     {
         if ((IsChatGptExecutable(executablePath, displayName) || IsClaudeExecutable(executablePath, displayName))
@@ -157,6 +288,11 @@ internal static class ProxyLauncherScriptGenerator
 
     private static string GetLauncherScriptName(string executablePath, string displayName)
     {
+        if (TargetApplicationCatalog.IsSteamExecutable(executablePath))
+        {
+            return "SteamProxy.cmd";
+        }
+
         if (AntigravityCloudCodeRelay.IsAntigravityExecutable(executablePath))
         {
             return "AntigravityProxy.cmd";
@@ -508,6 +644,28 @@ internal static class ProxyLauncherScriptGenerator
             + "shell.Run Chr(34) & scriptPath & Chr(34), 0, False" + Environment.NewLine;
     }
 
+    internal static string BuildSteamHiddenLauncherScript()
+    {
+        return "Option Explicit" + Environment.NewLine
+            + "Dim shell, fileSystem, exitCode" + Environment.NewLine
+            + "Set shell = CreateObject(\"WScript.Shell\")" + Environment.NewLine
+            + "Set fileSystem = CreateObject(\"Scripting.FileSystemObject\")" + Environment.NewLine
+            + "On Error Resume Next" + Environment.NewLine
+            + "shell.CurrentDirectory = fileSystem.GetParentFolderName(WScript.ScriptFullName)" + Environment.NewLine
+            + "If Err.Number = 0 Then" + Environment.NewLine
+            + "  exitCode = shell.Run(\".\\SteamProxy.cmd\", 0, True)" + Environment.NewLine
+            + "End If" + Environment.NewLine
+            + "If Err.Number <> 0 Then" + Environment.NewLine
+            + "  exitCode = 1" + Environment.NewLine
+            + "  Err.Clear" + Environment.NewLine
+            + "End If" + Environment.NewLine
+            + "On Error GoTo 0" + Environment.NewLine
+            + "If exitCode <> 0 Then" + Environment.NewLine
+            + "  MsgBox \"Steam 代理启动或恢复失败，请查看 EasyProxy Steam 代理日志。\", vbExclamation, \"EasyProxy Steam\"" + Environment.NewLine
+            + "End If" + Environment.NewLine
+            + "WScript.Quit exitCode" + Environment.NewLine;
+    }
+
     private static string MakeSafeFileName(string value)
     {
         var invalid = Path.GetInvalidFileNameChars().ToHashSet();
@@ -535,7 +693,9 @@ internal static class ProxyLauncherScriptGenerator
         var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
         var interactiveLocalAppData = FindInteractiveLocalAppData(desktop);
         var shortcutTargetPath = RebaseLocalAppDataPath(scriptPath, interactiveLocalAppData);
-        var workingDirectory = Path.GetDirectoryName(shortcutTargetPath) ?? "";
+        var workingDirectory = Path.GetDirectoryName(TargetApplicationCatalog.IsSteamExecutable(executablePath)
+            ? executablePath
+            : shortcutTargetPath) ?? "";
         foreach (var shortcutPath in new[]
         {
             string.IsNullOrWhiteSpace(desktop) ? null : Path.Combine(desktop, shortcutName),
@@ -551,8 +711,13 @@ internal static class ProxyLauncherScriptGenerator
         }
     }
 
-    private static string? GetShortcutName(string executablePath, string displayName)
+    internal static string? GetShortcutName(string executablePath, string displayName)
     {
+        if (TargetApplicationCatalog.IsSteamExecutable(executablePath))
+        {
+            return "Steam-Proxy.lnk";
+        }
+
         if (AntigravityCloudCodeRelay.IsAntigravityExecutable(executablePath))
         {
             return "Antigravity-Proxy.lnk";

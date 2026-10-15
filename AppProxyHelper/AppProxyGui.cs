@@ -80,6 +80,7 @@ internal sealed class AppProxyGuiForm : Form
     private readonly CheckBox _claudeCheck = new();
     private readonly CheckBox _antigravityCheck = new();
     private readonly CheckBox _antigravityIdeCheck = new();
+    private readonly CheckBox _steamCheck = new();
     private readonly Button _createScriptsButton = new();
     private readonly Button _cliContextMenuButton = new();
     private CancellationTokenSource? _operationCts;
@@ -500,7 +501,7 @@ internal sealed class AppProxyGuiForm : Form
     {
         var group = new GroupBox
         {
-            Text = "AI 应用代理生成",
+            Text = "应用代理生成",
             Dock = DockStyle.Fill,
             Margin = new Padding(3, 0, 0, 0)
         };
@@ -535,12 +536,19 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureCheck(_claudeCheck, "Claude 应用");
         ConfigureCheck(_antigravityCheck, "Antigravity 应用");
         ConfigureCheck(_antigravityIdeCheck, "Antigravity IDE");
+        ConfigureCheck(_steamCheck, "Steam");
+        var steamMenu = new ContextMenuStrip();
+        steamMenu.Items.Add("查看代理状态", null, async (_, _) => await ShowSteamProxyStatusAsync());
+        steamMenu.Items.Add("停止并恢复", null, async (_, _) => await StopSteamProxyAsync());
+        _steamCheck.ContextMenuStrip = steamMenu;
+        _steamCheck.Disposed += (_, _) => steamMenu.Dispose();
 
         checkTable.Controls.Add(_chatGptCheck, 0, 0);
         checkTable.Controls.Add(_cursorCheck, 1, 0);
         checkTable.Controls.Add(_claudeCheck, 0, 1);
         checkTable.Controls.Add(_antigravityCheck, 1, 1);
         checkTable.Controls.Add(_antigravityIdeCheck, 0, 2);
+        checkTable.Controls.Add(_steamCheck, 1, 2);
 
         table.Controls.Add(checkTable, 0, 0);
 
@@ -1042,7 +1050,7 @@ internal sealed class AppProxyGuiForm : Form
                 : _proxyUriText.Text.Trim();
             var scripts = new List<string>();
 
-            var checkBoxes = new[] { _chatGptCheck, _cursorCheck, _claudeCheck, _antigravityCheck, _antigravityIdeCheck };
+            var checkBoxes = new[] { _chatGptCheck, _cursorCheck, _claudeCheck, _antigravityCheck, _antigravityIdeCheck, _steamCheck };
             foreach (var cb in checkBoxes)
             {
                 if (cb.Checked && cb.Tag is TargetApplicationPreset app)
@@ -1058,7 +1066,7 @@ internal sealed class AppProxyGuiForm : Form
             {
                 MessageBox.Show(
                     this,
-                    "请至少勾选一个已检测到的 AI 应用来生成代理启动脚本。",
+                    "请至少勾选一个已检测到的应用来生成代理启动脚本。",
                     "生成脚本",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1085,6 +1093,27 @@ internal sealed class AppProxyGuiForm : Form
         using var dialog = new CliContextMenuDialog(_proxyUriText.Text.Trim());
         dialog.ShowDialog(this);
         SetStatus("CLI 右键菜单管理已关闭。");
+    }
+
+    private async Task ShowSteamProxyStatusAsync()
+    {
+        try
+        {
+            var status = await Task.Run(() => new SteamProxyProcessController().GetStatus());
+            MessageBox.Show(this, SteamProxyCli.FormatStatus(status), "Steam 代理状态", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "读取 Steam 状态失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
+    private async Task StopSteamProxyAsync()
+    {
+        try
+        {
+            await new SteamProxyProcessController().StopAsync();
+            SetStatus("Steam 代理已停止，已恢复原网络状态。");
+            AppendLog("Steam 代理已停止，Hosts 和临时配置已恢复；CA 保留供下次复用，可手动移除。");
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "停止 Steam 代理失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
     private void BrowseFile(TextBox target, string filter)
@@ -1166,6 +1195,7 @@ internal sealed class AppProxyGuiForm : Form
         UpdateAiAppCheckbox(_claudeCheck, "claude", "Claude 应用");
         UpdateAiAppCheckbox(_antigravityCheck, "antigravity", "Antigravity 应用");
         UpdateAiAppCheckbox(_antigravityIdeCheck, "antigravity-ide", "Antigravity IDE");
+        UpdateAiAppCheckbox(_steamCheck, "steam", "Steam");
     }
 
     private void UpdateAiAppCheckbox(CheckBox checkBox, string id, string displayName)

@@ -37,6 +37,14 @@ public sealed class ProcessProxyLauncher
             return 2;
         }
 
+        if (SteamApplicationLauncher.IsSteamExecutable(targetPath))
+        {
+            return await SteamApplicationLauncher.LaunchAsync(targetPath, _config.ProxyUri,
+                _config.TargetArguments,
+                string.IsNullOrWhiteSpace(_config.WorkingDirectory) ? null : PathResolver.Resolve(_config.WorkingDirectory, _loadedConfig.BaseDirectory),
+                _logger.Info, cancellationToken);
+        }
+
         var startInfo = new ProcessStartInfo(targetPath)
         {
             UseShellExecute = false,

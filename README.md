@@ -1,12 +1,12 @@
 # EasyProxy
 
-EasyProxy 是一个面向 Windows 桌面 AI 应用的代理启动器。它为 ChatGPT、Cursor、Claude、Antigravity 等 Electron/Chromium 应用生成独立的 `*-Proxy` 启动入口，并同时配置 Chromium 代理参数、进程环境变量和应用自身的代理设置。
+EasyProxy 是一个面向 Windows 桌面应用的代理工具。它为 ChatGPT、Cursor、Claude、Antigravity 和 Steam 等应用统一生成独立的 `*-Proxy` 启动入口。Electron/Chromium 应用使用代理参数、环境变量和应用设置；Steam 入口会先启动本地 HTTPS 反向代理，再启动 Steam。
 
-EasyProxy 当前只使用 `Environment` 模式。历史 Transparent/WinDivert 实现仍保留在源码中，但不再出现在配置、GUI、CLI 或发布包的日常入口里。
+AI 应用代理当前只使用 `Environment` 模式。历史 Transparent/WinDivert 实现仍保留在源码中，但不再出现在配置、GUI、CLI 或发布包的日常入口里。
 
 ## 功能概览
 
-- 自动发现已安装的 ChatGPT、Cursor、Claude、Antigravity 和 Antigravity IDE。
+- 自动发现已安装的 ChatGPT、Cursor、Claude、Antigravity、Antigravity IDE 和 Steam。
 - 为每个应用新增独立的 `应用名-Proxy` 桌面及开始菜单快捷方式，不覆盖原应用图标。
 - 注入 `--disable-quic`、`--proxy-server`、`--proxy-bypass-list` 和常用代理环境变量。
 - 自动同步 Cursor、Antigravity、Antigravity IDE 的 VS Code 风格代理设置。
@@ -15,6 +15,7 @@ EasyProxy 当前只使用 `Environment` 模式。历史 Transparent/WinDivert �
 - 为 Antigravity 系列提供本机 CloudCode relay，以及 language server shim/旁路 patched 副本。
 - 在资源管理器中安装“在此处打开 Claude/Codex”的代理右键菜单。
 - 提供代理握手、CONNECT 和 TLS 诊断，以及 GUI 动态日志。
+- 将 Steam 纳入相同的应用勾选与一键生成流程，生成 `Steam-Proxy` 快捷方式，为商店、社区、API 和网页资源提供 Hosts 接入、本地 TLS 终结与上游代理回源。
 
 ## 支持的应用
 
@@ -25,6 +26,7 @@ EasyProxy 当前只使用 `Environment` 模式。历史 Transparent/WinDivert �
 | Claude Desktop | `claude` | `Claude-Proxy` | 使用 HTTP 兼容代理；支持 MSIX 激活与 `CoworkVMService` |
 | Antigravity | `antigravity` | `Antigravity-Proxy` | CloudCode relay + language server shim |
 | Antigravity IDE | `antigravity-ide` | `Antigravity IDE-Proxy` | CloudCode relay + patched language server 副本 |
+| Steam | `steam` | `Steam-Proxy` | 先启动本地 HTTPS 反向代理，再启动 Steam；首次安装当前用户 CA 并保留复用，退出后停止后台并恢复 Hosts |
 | 其他 Electron/Chromium 应用 | 自定义 `--target` | `<名称>-Proxy` | Chromium 参数 + 代理环境变量 |
 
 `codex` 仍可作为 `chatgpt` 的兼容别名。ChatGPT 的 Microsoft Store 技术包名目前仍是 `OpenAI.Codex`，这类兼容名称不会被改写。
@@ -37,11 +39,13 @@ EasyProxy 当前只使用 `Environment` 模式。历史 Transparent/WinDivert �
 
 1. 在“代理地址”中填写代理，例如 `socks5://127.0.0.1:7890`。
 2. 点击“检查代理”确认本机端口、代理握手和 TLS 链路。
-3. 在“AI 应用代理生成”中勾选已检测到的应用。
+3. 在应用代理生成列表中勾选已检测到的应用，Steam 与其他应用使用相同操作。
 4. 点击“一键生成代理启动脚本”。
 5. 以后从桌面或开始菜单运行新的 `*-Proxy` 快捷方式。
 
-原应用快捷方式仍保持原样；直接点击原图标不会经过 EasyProxy。
+原应用快捷方式仍保持原样。Steam 代理会话期间，系统访问其托管域名都会经过本地代理；Steam 主进程退出后自动恢复，也可执行 `EasyProxy steam stop` 提前停止。
+
+勾选 Steam 后会生成 `SteamProxy.cmd`、`SteamProxy.vbs` 和 `Steam-Proxy` 快捷方式。生成阶段只准备启动入口；运行快捷方式时才首次安装或复用已安装的 CA、请求 UAC 并启动 Steam 代理会话，详见下方“Steam 网页代理”。
 
 ### 使用命令行
 
@@ -55,6 +59,7 @@ EasyProxy scripts --app cursor --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app claude --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app antigravity --proxy socks5://127.0.0.1:7890
 EasyProxy scripts --app antigravity-ide --proxy socks5://127.0.0.1:7890
+EasyProxy scripts --app steam --proxy socks5://127.0.0.1:7890
 
 # 为任意 exe 生成入口
 EasyProxy scripts --target "C:\Path\To\App.exe" --name "My App" `
@@ -73,10 +78,13 @@ EasyProxy scripts --target "C:\Path\To\App.exe" --name "My App" `
 ```
 
 - `.vbs` 隐藏命令行窗口。
-- `.cmd` 设置代理环境变量、准备应用专用组件，并启动目标应用。
+- Electron/Chromium 应用的 `.cmd` 设置代理环境变量、准备应用专用组件，并启动目标应用。
+- Steam 的 `SteamProxy.cmd` 调用 EasyProxy 的 Steam 启动流程，等待 HTTPS 代理就绪后再启动 Steam；它通过 `SteamProxy.vbs` 隐藏命令行窗口，并由 `Steam-Proxy.lnk` 引用。
 - ChatGPT 和 Claude 的 MSIX 入口还会生成 `Start-PackagedApp.ps1`，在 WindowsApps 禁止直接启动 exe 时回退到包激活。
 
 脚本默认写入目标应用目录下的 `EasyProxy` 子目录。对于 WindowsApps/MSIX 应用，脚本写入对应包的可写 `LocalCache\EasyProxy`；无法使用目标目录时，回退到 `%LOCALAPPDATA%\EasyProxy`。
+
+Steam 默认生成到安装目录的 `EasyProxy` 子目录；该目录不可写时回退到 `%LOCALAPPDATA%\EasyProxy\Steam`。显式指定的 `--out` 目录写入失败时会报错。
 
 ChatGPT 启动脚本还包含一个可选本机钩子：仅当 `D:\CodeSpace\GamerUnit_Main\GamerUnitManagement\start-dbhub.bat` 存在时，才会在启动 ChatGPT 前静默调用它；其他环境不会执行该步骤。
 
@@ -153,6 +161,61 @@ Relay 使用专用运行程序 `EasyProxyRelayHost.exe`，避免被按 `node` �
 - Antigravity IDE：不覆盖原始 `language_server_windows_x64.exe`，而是生成 `.easyproxy-pristine.exe` 和 `.easyproxy-patched.exe` 旁路副本，并通过 settings 指向 patched 副本。
 - 如果没有 Node.js，启动脚本会尝试通过 `winget` 安装 Node.js LTS；没有 `winget` 时需要手动安装。
 - 应用更新可能覆盖 shim 或替换 server，重新生成 `*-Proxy` 即可修复。
+
+## Steam 网页代理
+
+此功能根据 [`Watt Toolkit Steam 加速实现分析报告`](docs/Watt%20Toolkit%20Steam%20加速实现分析报告.md) 实现 Hosts 模式的基础链路：
+
+```text
+Steam / 浏览器
+  -> Hosts 中的 EasyProxy Steam 域名映射
+  -> 127.0.0.1:80 / 127.0.0.1:443（按 SNI 签发证书）
+  -> 用户指定的 HTTP(S) / SOCKS5 上游代理，或独立 DNS 解析后直连
+  -> Steam 商店 / 社区 / API / 网页资源
+```
+
+在首页应用列表勾选 Steam，填写与其他应用共用的代理地址，再点击“一键生成代理启动脚本”。生成的 `Steam-Proxy.lnk` 经 `SteamProxy.vbs` / `SteamProxy.cmd` 调用 EasyProxy：为本次会话启动 Steam 代理，确认就绪后再启动 Steam。生成脚本和快捷方式时不会修改系统 Hosts 或安装根证书。
+
+运行 `Steam-Proxy` 时，EasyProxy 会在首次使用时安装自己的**当前用户** CA 信任，后续启动复用已安装的证书，并通过 UAC 启动后台进程、写入专用 Hosts 标记区。证书和信任在 Steam 退出后保留，不随每次会话安装、移除。提权必须使用同一 Windows 用户，不支持在 UAC 中切换其他管理员账户。需要空闲的本机 TCP 80 / 443 端口；与 Watt Toolkit 等同端口工具同时运行会发生冲突。
+
+同一 Steam 安装路径下的 `Steam.exe` 主进程全部退出后，EasyProxy 自动停止本次代理后台、恢复 Hosts，并删除临时的 `session-settings.dat`。已安装的 CA、证书私钥和信任保留供下次使用；原有配置、无关 Hosts 条目、诊断日志、生成的脚本和快捷方式也保留。Steam 已经运行或通过单例进程转交启动参数时，会等待实际主进程退出；更新造成的短暂重启保留约 4 秒宽限期，不把 `steamwebhelper.exe` 当作主进程。
+
+```powershell
+# 生成 Steam-Proxy 入口；以后运行桌面或开始菜单中的快捷方式
+EasyProxy scripts --app steam --proxy socks5://127.0.0.1:7890
+
+# 手动维护后台代理，需自己执行 steam stop；不启动 Steam 客户端
+EasyProxy steam start --proxy socks5://127.0.0.1:7890
+
+# 或使用独立 DNS 避开 Hosts 自环后直接回源
+EasyProxy steam start --direct
+
+# 查看后台进程、证书信任、Hosts 和日志位置
+EasyProxy steam status
+
+# 停止后台代理，并恢复 EasyProxy 管理的 Hosts 映射
+EasyProxy steam stop
+
+# 可单独管理当前用户的 CA 信任（移除前先停止）
+EasyProxy steam install-cert
+EasyProxy steam remove-cert
+```
+
+`Steam-Proxy` 使用生成入口时选择的代理地址作为本次会话参数，不将其写成长期 Steam 配置；修改后重新生成入口即可。右键首页的 Steam 勾选项可“查看代理状态”或“停止并恢复”。直接使用 `steam start` 属于手动维护模式，不随客户端退出而停止；不带 `--proxy` 或 `--direct` 时沿用已保存的配置，手动切换上游前先执行 `steam stop`。
+
+Steam 数据与诊断日志位于 `%LOCALAPPDATA%\EasyProxy\SteamProxy`，`steam status` 显示实际路径。`Steam-Proxy` 在会话结束时停止后台、恢复 Hosts 并删除临时会话配置，保留 CA 及其信任。只有用户明确执行 `steam remove-cert` 时才移除当前用户的 CA 信任，执行前需先停止代理。异常退出后可再次执行 `steam stop` 恢复残留映射。
+
+更新或卸载 EasyProxy 前先结束 Steam 代理会话，或执行 `steam stop`；如需同时移除 CA 信任，再执行 `steam remove-cert`。仅关闭 EasyProxy 主窗口不影响正在运行的 Steam 代理会话。
+
+此版本覆盖报告中的 16 个固定网页域名，保留 HTTP 跳转、动态叶子证书和流式 HTTP 转发。它不包含 Watt Toolkit 的远程规则订阅、伪装 SNI 策略、讨论修复脚本、HTML 注入或 `local.steampp.net` 跨域桥；也不处理 Steam 游戏下载、UDP、联机或游戏加速。直连效果取决于实际网络与 DNS，指定上游时取决于该代理能否访问对应 Steam 域名。
+
+实现使用 .NET 10 Kestrel 和 YARP 2.3.0。回源保留原域名、Cookie、压缩和重定向，支持流式请求/响应及 WebSocket；上游 TLS 证书按正常信任链校验。直连通过独立 DoH 查询 IPv4 地址，不回退到系统 Hosts。临时会话配置和 CA 私钥以当前用户 DPAPI 加密；会话结束仅删除临时配置，CA 私钥保留复用。日志不记录请求路径、Cookie 或认证头。
+
+2026-10-15 初版反向代理验证：35 项测试通过，包含本地 HTTPS POST、重定向、多 Cookie、WebSocket、HTTP CONNECT / SOCKS5 及不受信上游证书拒绝。使用临时高端口和私有测试信任链，经本机 `127.0.0.1:7890` 的 HTTP 和 SOCKS5 代理分别访问商店、社区、API 的 `/robots.txt`，6 次均返回 200；直连仅 API 返回 200，商店/社区返回 502，因此当前网络建议指定上游代理。这轮测试未写系统 Hosts 或安装根证书。后续一轮已完成实际 Steam 客户端启动，以系统默认信任访问商店、社区和 API 的 HTTPS 均返回 200，正常关闭 Steam 后 Hosts 自动恢复。
+
+保留 CA 的流程已连续完成两轮实际 Steam 启动及 `Steam.exe -shutdown` 正常退出验证：第二轮复用同一 CA 指纹，公钥证书和 DPAPI 私钥文件哈希均未变化；每轮退出后 Hosts 字节和属性恢复到启动前，80/443 释放，后台与临时会话配置清理完成。最终只保留 CA 公钥、DPAPI 私钥和诊断日志，没有写入永久的 `settings.dat`。第一轮经本地代理访问商店、社区和 API 的 HTTPS 均在默认系统信任下返回 200，第二轮也观察到实际 Steam 请求经代理返回 200。主程序编译为 0 警告、0 错误。
+
+本机测试 DLL 重编译后仍被火绒隔离，告警未消除，也未经厂商确认误报；未关闭防护、添加排除或恢复隔离文件。完整回归测试由 `.github/workflows/windows-tests.yml` 在标准 Windows CI 中执行，包含 C# 代理、证书、Hosts、生命周期及控制通道用例，以及 Relay 测试；测试程序集不包含在安装包内。Windows curl 的严格撤销检查另报 `CRYPT_E_NO_REVOCATION_CHECK`，本地证书暂未提供 CRL；上述 HTTPS 成功记录来自默认信任设置的 .NET 请求及实际 Steam 流量，不代表所有客户端的证书策略均已验证。
 
 ## 配置文件模式
 

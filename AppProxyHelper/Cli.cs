@@ -19,6 +19,7 @@ public static class Cli
                 "check" => await CheckAsync(args),
                 "run" => await RunTargetAsync(args),
                 "scripts" => CreateLauncherScripts(args),
+                "steam" => await SteamProxyCli.RunAsync(args[1..]),
                 _ => UnknownCommand(command)
             };
         }
@@ -125,7 +126,7 @@ public static class Cli
         else
         {
             var app = TargetApplicationCatalog.FindInstalledById(appId)
-                ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, chatgpt, cursor, claude, antigravity。");
+                ?? throw new CommandLineException($"未找到应用: {appId}。可用值: all, chatgpt, cursor, claude, antigravity, antigravity-ide, steam。");
             scripts.AddRange(ProxyLauncherScriptGenerator.CreateScripts(
                 app.ExecutablePath,
                 app.Name,
@@ -152,7 +153,7 @@ public static class Cli
 
         if (scripts.Count == 0)
         {
-            throw new CommandLineException("没有找到 ChatGPT、Cursor、Claude 或 Antigravity。也可以用 --target 指定 exe。");
+            throw new CommandLineException("没有找到 ChatGPT、Cursor、Claude、Antigravity 或 Steam。也可以用 --target 指定 exe。");
         }
 
         Console.WriteLine("已生成代理启动脚本:");
@@ -214,20 +215,24 @@ public static class Cli
     {
         Console.WriteLine(
             """
-            EasyProxy - Electron/Chromium 应用代理启动器
+            EasyProxy - 桌面应用代理启动器与 Steam 网页代理
 
             用法:
               EasyProxy init [--config app-proxy.json]
               EasyProxy check --config app-proxy.json
               EasyProxy run --config app-proxy.json
-              EasyProxy scripts [--config app-proxy.json] [--app all|chatgpt|cursor|claude|antigravity|antigravity-ide] [--out DIR]
+              EasyProxy scripts [--config app-proxy.json] [--app all|chatgpt|cursor|claude|antigravity|antigravity-ide|steam] [--out DIR]
               EasyProxy ui [--config app-proxy.json]
+              EasyProxy steam start [--proxy URI | --direct]
+              EasyProxy steam stop|status|install-cert|remove-cert
 
             说明:
               EasyProxy 会启动目标 Electron/Chromium 应用，并自动注入 --disable-quic、
               --proxy-server、--proxy-bypass-list 以及 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
               等环境变量。它面向 ChatGPT、Cursor、Claude、Antigravity 这类桌面 AI 应用，不再提供
               Transparent/WinDivert 透明拦截入口。
+              steam 子命令通过独立本地 HTTPS 反向代理处理 Steam 网页流量；
+              运行 EasyProxy steam --help 查看证书、Hosts 和后台服务说明。
             """);
     }
 }

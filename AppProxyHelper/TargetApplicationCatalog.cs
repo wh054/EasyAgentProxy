@@ -1,3 +1,5 @@
+using Microsoft.Win32;
+
 namespace AppProxyHelper;
 
 internal sealed record TargetApplicationPreset(string Id, string Name, string ExecutablePath)
@@ -15,6 +17,7 @@ internal static class TargetApplicationCatalog
         AddTargetPreset(presets, "claude", "Claude 应用", GetClaudeCandidates());
         AddTargetPreset(presets, "antigravity", "Antigravity 应用", GetAntigravityCandidates());
         AddTargetPreset(presets, "antigravity-ide", "Antigravity IDE", GetAntigravityIdeCandidates());
+        AddTargetPreset(presets, "steam", "Steam", GetSteamCandidates());
         return presets;
     }
 
@@ -31,6 +34,11 @@ internal static class TargetApplicationCatalog
 
     public static string GuessNameFromPath(string executablePath)
     {
+        if (IsSteamExecutable(executablePath))
+        {
+            return "Steam";
+        }
+
         var name = Path.GetFileNameWithoutExtension(executablePath);
         return string.IsNullOrWhiteSpace(name) ? "Electron App" : name;
     }
@@ -48,7 +56,12 @@ internal static class TargetApplicationCatalog
         }
     }
 
-    private static string? FindFirstExistingFile(IEnumerable<string> candidates)
+    internal static bool IsSteamExecutable(string executablePath)
+    {
+        return Path.GetFileName(executablePath).Equals("steam.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string? FindFirstExistingFile(IEnumerable<string> candidates)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var candidate in candidates)
@@ -263,6 +276,99 @@ internal static class TargetApplicationCatalog
         {
             yield return Path.Combine(programFiles, "Antigravity IDE", "Antigravity IDE.exe");
         }
+    }
+
+    internal static IReadOnlyList<string> GetSteamCandidates()
+    {
+        var userExecutables = ReadSteamRegistryValues(RegistryHive.CurrentUser, "SteamExe");
+        var directories = ReadSteamRegistryValues(RegistryHive.CurrentUser, "SteamPath")
+            .Concat(ReadSteamRegistryValues(RegistryHive.LocalMachine, "InstallPath"));
+        return BuildSteamCandidates(userExecutables, directories, new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)
+        });
+    }
+
+    internal static IReadOnlyList<string> BuildSteamCandidates(
+        IEnumerable<string?> steamExecutables,
+        IEnumerable<string?> steamDirectories,
+        IEnumerable<string?> programFilesDirectories)
+    {
+        var candidates = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void AddCandidate(string? value, bool isExecutable)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            try
+            {
+                var path = value.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar);
+                if (!Path.IsPathFullyQualified(path))
+                {
+                    return;
+                }
+
+                var candidate = Path.GetFullPath(isExecutable ? path : Path.Combine(path, "steam.exe"));
+                if (Path.GetFileName(candidate).Equals("steam.exe", StringComparison.OrdinalIgnoreCase)
+                    && seen.Add(candidate))
+                {
+                    candidates.Add(candidate);
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // A malformed registry path must not prevent discovering other applications.
+            }
+        }
+
+        foreach (var executable in steamExecutables)
+        {
+            AddCandidate(executable, isExecutable: true);
+        }
+
+        foreach (var directory in steamDirectories)
+        {
+            AddCandidate(directory, isExecutable: false);
+        }
+
+        foreach (var directory in programFilesDirectories.Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            AddCandidate(Path.Combine(directory!, "Steam"), isExecutable: false);
+        }
+
+        return candidates;
+    }
+
+    private static IReadOnlyList<string> ReadSteamRegistryValues(RegistryHive hive, string valueName)
+    {
+        var values = new List<string>();
+        if (!OperatingSystem.IsWindows())
+        {
+            return values;
+        }
+
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        {
+            try
+            {
+                using var root = RegistryKey.OpenBaseKey(hive, view);
+                using var key = root.OpenSubKey(@"SOFTWARE\Valve\Steam", writable: false);
+                if (key?.GetValue(valueName) is string value && !string.IsNullOrWhiteSpace(value))
+                {
+                    values.Add(value);
+                }
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            {
+                // Registry discovery is optional; retain the standard installation fallbacks.
+            }
+        }
+
+        return values;
     }
 
     private static IEnumerable<string> GetProgramFilesDirectories()

@@ -9,3 +9,15 @@ obj/
 logs/
 *.log
 dist/
+
+# Local proxy settings, certificates, and private key material.
+app-proxy.json
+session-settings.dat
+settings.dat
+*.dpapi
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt

@@ -15,4 +15,9 @@
     <ApplicationIcon>Assets\EasyProxyAppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
 </Project>

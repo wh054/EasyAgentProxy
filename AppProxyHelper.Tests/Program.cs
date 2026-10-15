@@ -30,7 +30,7 @@ internal static class Program
         };
 
         var failures = 0;
-        foreach (var test in tests)
+        foreach (var test in tests.Concat(SteamProxyTests.Cases).Concat(SteamLauncherTests.Cases).Concat(SteamLifetimeTests.Cases).Concat(SteamControlTests.Cases))
         {
             try
             {
@@ -40,7 +40,7 @@ internal static class Program
             catch (Exception ex)
             {
                 failures++;
-                Console.Error.WriteLine($"FAIL {test.Name}: {ex.Message}");
+                Console.Error.WriteLine($"FAIL {test.Name}: {ex}");
             }
         }
 
