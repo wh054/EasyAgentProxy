@@ -1,6 +1,6 @@
 # EasyProxy 项目说明
 
-EasyProxy 为 Electron/Chromium 桌面 AI 应用和 Steam 提供统一的代理启动入口。应用在同一列表勾选并一键生成 `应用名-Proxy` 快捷方式；Steam 的启动入口负责先准备本地网页反向代理，再启动客户端。
+EasyProxy 为 Electron/Chromium 桌面 AI 应用和 Steam 提供统一的代理启动入口。应用在同一列表勾选并一键生成 `应用名-Proxy` 快捷方式；Steam 的启动入口负责先准备本地网页反向代理，再启动客户端。所选上游仅用于 Steam 网页，游戏下载和更新保持原链路。
 
 ## 产品方向
 
@@ -112,22 +112,25 @@ patched 副本会把 CloudCode、OAuth userinfo/tokeninfo、Drive/Upload 相关�
 
 ### Steam 网页代理
 
-实现依据为 `docs/Watt Toolkit Steam 加速实现分析报告.md`。本版本复刻 Hosts 模式的基础转发链路，覆盖报告中的 Steam 商店、社区、API、静态资源及视频封面 16 个固定域名。
+实现依据为 `docs/Watt Toolkit Steam 加速实现分析报告.md` 的网页分组。本版本接管商店、社区、帮助、登录、结算、专用图片/静态资源及视频封面，共 12 个明确域名；域名清单见 README 的“Steam 网页代理”。不使用 Steam 或 CDN 后缀通配。
+
+从原 16 域规则中排除 `media.steampowered.com`（更新组）、`steamcdn-a.akamaihd.net` / `cdn.akamai.steamstatic.com`（通用共享 CDN）和 `api.steampowered.com`（包含下载服务器发现）。游戏下载、更新、SteamPipe 与独立 CDN 修复域名不写 Hosts；原有下载链路保持不变。Steam 启动入口不注入通用代理环境变量或设置系统代理，配置的上游仅用于网页白名单。
 
 ```text
-首页应用列表勾选 Steam → 一键生成代理启动脚本
+首页应用列表勾选 Steam（网页） → 一键生成代理启动脚本
   -> Steam-Proxy.lnk → SteamProxy.vbs → SteamProxy.cmd
   -> EasyProxy steam launch（临时会话参数）
   -> 首次安装或复用当前用户 EasyProxy Steam CA 信任
   -> 隐藏、提权的 EasyProxy steam run-session 后台进程
   -> 127.0.0.1:80（HTTPS 跳转） / 127.0.0.1:443（SNI 动态证书）
   -> 专用 Hosts 标记区
-  -> 启动 Steam，经用户上游代理或独立 DNS 直连回源
+  -> 启动 Steam；仅白名单网页经用户上游代理或独立 DNS 直连回源
+  -> 游戏下载、更新和下载服务发现沿原链路
   -> 等待同路径 Steam.exe 主进程全部退出（重启宽限约 4 秒）
   -> 结束本次后台，恢复 Hosts，删除临时会话配置；保留 CA 供下次使用
 ```
 
-Steam 与其他应用共用首页代理地址、应用勾选列表和生成按钮，生成 `SteamProxy.cmd`、`SteamProxy.vbs` 以及桌面/开始菜单中的 `Steam-Proxy.lnk`。快捷方式调用 `steam launch`，由 EasyProxy 为本次会话准备后台服务，等待就绪后启动 Steam。首次安装或复用 CA、通过同用户 UAC 写 Hosts 均在运行阶段处理，不在生成阶段执行。关闭 GUI 不影响当前 Steam 会话。
+Steam 与其他应用共用首页代理地址、应用勾选列表和生成按钮，勾选项显示“Steam（网页）”，提示游戏下载和更新沿原链路，不新增页面或布局。生成文件仍为 `SteamProxy.cmd`、`SteamProxy.vbs` 以及桌面/开始菜单中的 `Steam-Proxy.lnk`。快捷方式调用 `steam launch`，由 EasyProxy 为本次会话准备后台服务，等待就绪后启动 Steam。首次安装或复用 CA、通过同用户 UAC 写 Hosts 均在运行阶段处理，不在生成阶段执行。关闭 GUI 不影响当前 Steam 会话。
 
 `SteamProcessLifetime` 以 Steam.exe 完整路径跟踪主进程：兼容 Steam 已运行、启动器瞬退、单例传参和短暂更新重启，忽略其他安装路径的 Steam 及 `steamwebhelper.exe`。全部主进程连续约 4 秒不存在后，会话停止后台、恢复 Hosts 并删除临时配置；已安装 CA、证书私钥和信任保留供下次复用，原有配置、诊断日志、生成的脚本及快捷方式保留，不终止 Steam 进程。
 
@@ -137,7 +140,9 @@ CLI 保留 `steam start [--proxy URI | --direct]`、`steam stop`、`steam status
 
 2026-10-15 验证边界：初版 35 项测试已通过；保留 CA 的流程已连续完成两轮实际 Steam 启动与正常退出验证，第二轮复用同一证书和 DPAPI 私钥，退出后 Hosts 字节与属性恢复、80/443 释放、后台和临时会话配置删除。商店、社区和 API 的默认系统信任 HTTPS 请求均返回 200，并观察到实际 Steam 流量经代理返回 200。主程序编译为 0 警告、0 错误。本机测试 DLL 重编译后仍被火绒隔离，告警尚未消除或经厂商复核；完整回归由标准 Windows CI 执行，安装包不包含测试程序集。Windows curl 严格撤销检查因本地证书未提供 CRL 而失败，尚不代表所有客户端证书策略均通过。
 
-此版本不实现远程规则订阅、伪装 SNI、第三方讨论修复脚本、HTML 注入和跨域桥。Steam 游戏下载、UDP 和游戏联机不属于此入口。固定域名列表和本地验证不能代替 Steam 客户端实际访问的运行时验证。
+上述验证对应范围收敛前的规则，API 当时仍被接管；本次 12 域网页策略和游戏下载隔离的运行时结果须单独验证。
+
+此版本不实现远程规则订阅、伪装 SNI、第三方讨论修复脚本、HTML 注入和跨域桥。Steam 游戏下载、更新、UDP 和游戏联机保持原链路；depot 下载路径不得进入网页上游。固定域名列表和本地验证不能代替 Steam 客户端实际访问的运行时验证。
 
 ## 关键文件
 
@@ -171,6 +176,7 @@ Transparent 相关实现暂时留在仓库中作为历史实现，但不再由�
 - 如果新增应用支持，优先判断它只需要 Environment/settings，还是需要类似 Antigravity 的协议 relay 或进程 shim。
 - Steam Hosts 操作只维护专用标记区，停止和失败恢复必须保留用户及其他工具的 Hosts 内容；验证不得把启动服务、修改系统 Hosts 或安装证书默认为普通单元测试步骤。
 - Steam 保持与其他应用相同的勾选、生成、快捷方式入口；生成不得启动后台服务、修改 Hosts 或安装 CA，运行快捷方式时才处理这些操作。
+- Steam 规则只允许网页白名单；读取旧配置时迁移并剔除上述四个排除域名，不得直接复用旧策略后台。策略版本与 depot 下载路径保护必须同步维护，禁止把下载/CDN 修复组或下载服务器发现重新并入网页上游。
 - `Steam-Proxy` 随同路径 Steam 主进程的生命周期停止后台、恢复 Hosts 并删除临时会话配置；不能仅等待 Process.Start 返回的短命启动器，也不能结束用户的 Steam 进程。
 - CA 首次安装后持久保存并复用，退出不移除证书、私钥或信任；仅临时的 `session-settings.dat` 在会话结束时删除，诊断日志、启动脚本、快捷方式及用户原有显式配置保留。
 - Steam CA 只由 Steam 功能管理，运行中拒绝移除信任；日志不得记录用户代理凭据、Steam Cookie 和认证头。

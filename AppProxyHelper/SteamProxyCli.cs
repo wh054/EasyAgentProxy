@@ -106,6 +106,7 @@ internal static class SteamProxyCli
     {
         var text = new StringBuilder();
         text.AppendLine($"Steam 代理: {(status.IsRunning ? "运行中" : "已停止")}");
+        text.AppendLine("代理范围: 商店、社区等网页；游戏下载与更新保留原网络链路");
         if (status.ProcessId is { } processId)
         {
             text.AppendLine($"后台进程: {processId}");
@@ -240,7 +241,7 @@ internal static class SteamProxyCli
             start 首次安装独立的当前用户 EasyProxy Steam CA，后续复用，并提权启动后台服务、写入 Hosts 映射。
             不指定 --proxy 或 --direct 时沿用已保存的上游代理；首次默认 socks5://127.0.0.1:7890。
             stop 会停止后台服务、恢复 Hosts 并清理会话配置，保留 CA；remove-cert 可在停止后移除 CA 信任。
-            支持 Steam 商店、社区、API 和网页资源；不提供游戏下载或 UDP/游戏加速。
+            仅代理 Steam 商店、社区及专用网页资源；游戏下载、更新、通用 CDN 和下载服务器目录 API 保留原网络链路。
             """);
     }
 }

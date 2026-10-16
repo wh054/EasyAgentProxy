@@ -536,12 +536,18 @@ internal sealed class AppProxyGuiForm : Form
         ConfigureCheck(_claudeCheck, "Claude 应用");
         ConfigureCheck(_antigravityCheck, "Antigravity 应用");
         ConfigureCheck(_antigravityIdeCheck, "Antigravity IDE");
-        ConfigureCheck(_steamCheck, "Steam");
+        ConfigureCheck(_steamCheck, "Steam（网页）");
+        var steamToolTip = new ToolTip();
+        steamToolTip.SetToolTip(_steamCheck, "仅商店、社区等网页使用所选代理；游戏下载和更新沿原下载链路。");
         var steamMenu = new ContextMenuStrip();
         steamMenu.Items.Add("查看代理状态", null, async (_, _) => await ShowSteamProxyStatusAsync());
         steamMenu.Items.Add("停止并恢复", null, async (_, _) => await StopSteamProxyAsync());
         _steamCheck.ContextMenuStrip = steamMenu;
-        _steamCheck.Disposed += (_, _) => steamMenu.Dispose();
+        _steamCheck.Disposed += (_, _) =>
+        {
+            steamMenu.Dispose();
+            steamToolTip.Dispose();
+        };
 
         checkTable.Controls.Add(_chatGptCheck, 0, 0);
         checkTable.Controls.Add(_cursorCheck, 1, 0);
@@ -1100,7 +1106,7 @@ internal sealed class AppProxyGuiForm : Form
         try
         {
             var status = await Task.Run(() => new SteamProxyProcessController().GetStatus());
-            MessageBox.Show(this, SteamProxyCli.FormatStatus(status), "Steam 代理状态", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, SteamProxyCli.FormatStatus(status), "Steam 网页代理状态", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "读取 Steam 状态失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
@@ -1110,8 +1116,8 @@ internal sealed class AppProxyGuiForm : Form
         try
         {
             await new SteamProxyProcessController().StopAsync();
-            SetStatus("Steam 代理已停止，已恢复原网络状态。");
-            AppendLog("Steam 代理已停止，Hosts 和临时配置已恢复；CA 保留供下次复用，可手动移除。");
+            SetStatus("Steam 网页代理已停止，Hosts 已恢复。");
+            AppendLog("Steam 网页代理已停止，Hosts 和临时配置已恢复；CA 保留供下次复用，可手动移除。");
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "停止 Steam 代理失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
@@ -1195,7 +1201,7 @@ internal sealed class AppProxyGuiForm : Form
         UpdateAiAppCheckbox(_claudeCheck, "claude", "Claude 应用");
         UpdateAiAppCheckbox(_antigravityCheck, "antigravity", "Antigravity 应用");
         UpdateAiAppCheckbox(_antigravityIdeCheck, "antigravity-ide", "Antigravity IDE");
-        UpdateAiAppCheckbox(_steamCheck, "steam", "Steam");
+        UpdateAiAppCheckbox(_steamCheck, "steam", "Steam（网页）");
     }
 
     private void UpdateAiAppCheckbox(CheckBox checkBox, string id, string displayName)

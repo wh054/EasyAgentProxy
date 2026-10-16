@@ -9,11 +9,12 @@ using System.Text.Json;
 namespace AppProxyHelper;
 
 public sealed record SteamProxyStatus(bool IsRunning, int? ProcessId, string? UpstreamProxyUri,
-    bool CertificateTrusted, bool HostsInstalled, string LogFilePath, string DataDirectory, bool IsSession = false);
+    bool CertificateTrusted, bool HostsInstalled, string LogFilePath, string DataDirectory, bool IsSession = false, int WebPolicyVersion = 0);
 
 /// <summary>Owns an elevated worker via a same-user named pipe; never terminates a process by saved PID.</summary>
 public sealed class SteamProxyProcessController
 {
+    public const int CurrentWebPolicyVersion = 1;
     public static string DefaultDataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EasyProxy", "SteamProxy");
     public string DataDirectory { get; }
     private readonly string? _hostsPath;
@@ -36,10 +37,7 @@ public sealed class SteamProxyProcessController
     public SteamProxySettings LoadSettings()
     {
         if (!File.Exists(SettingsPath)) return new SteamProxySettings { UpstreamProxyUri = new AppProxyConfig().ProxyUri };
-        var value = JsonSerializer.Deserialize<SteamProxySettings>(SteamDataProtection.Unprotect(File.ReadAllBytes(SettingsPath)), JsonOptions)
-            ?? throw new InvalidOperationException("Steam 代理配置为空。");
-        value.Validate();
-        return value;
+        return ReadSettings(SettingsPath);
     }
 
     public SteamProxyStatus GetStatus()
@@ -65,7 +63,7 @@ public sealed class SteamProxyProcessController
             var saved = ReadSettings(SessionSettingsPath);
             if (!SteamProcessLifetime.IsMatchingSteamProcessPath(steamExecutablePath, saved.SessionSteamExecutablePath))
                 throw new InvalidOperationException("另一个 Steam 安装目录的代理会话正在运行，请先退出该 Steam 后再启动。");
-            if (status.CertificateTrusted && status.HostsInstalled && SameProxy(saved.UpstreamProxyUri, upstreamProxyUri)) return status;
+            if (CanReuseSessionPolicy(status) && status.CertificateTrusted && status.HostsInstalled && SameProxy(saved.UpstreamProxyUri, upstreamProxyUri)) return status;
             await StopAsync(cancellationToken);
         }
         return await StartWorkerAsync(upstreamProxyUri, sessionMode: true, cancellationToken, steamExecutablePath);
@@ -83,6 +81,8 @@ public sealed class SteamProxyProcessController
         return string.Equals(Normalize(left), Normalize(right), StringComparison.Ordinal);
     }
 
+    internal static bool CanReuseSessionPolicy(SteamProxyStatus status) => status.WebPolicyVersion == CurrentWebPolicyVersion;
+
     public Task<SteamProxyStatus> StartAsync(string? upstreamProxyUri, CancellationToken cancellationToken = default)
         => StartWorkerAsync(upstreamProxyUri, sessionMode: false, cancellationToken);
 
@@ -92,6 +92,7 @@ public sealed class SteamProxyProcessController
         try
         {
             var value = JsonSerializer.Deserialize<SteamProxySettings>(bytes, JsonOptions) ?? throw new InvalidDataException("Steam 代理配置为空。");
+            value.ApplyWebOnlyPolicy();
             value.Validate();
             return value;
         }
@@ -261,7 +262,7 @@ public sealed class SteamProxyProcessController
             FlushDns();
             Log($"Steam 已启动，回源: {(settings.UpstreamProxyUri is null ? "直连 / 独立 DoH" : UriFormatter.Sanitize(settings.UpstreamProxyUri))}");
             var liveStatus = new SteamProxyStatus(true, Environment.ProcessId,
-                settings.UpstreamProxyUri is null ? null : UriFormatter.Sanitize(settings.UpstreamProxyUri), true, true, LogFilePath, DataDirectory, sessionMode);
+                settings.UpstreamProxyUri is null ? null : UriFormatter.Sanitize(settings.UpstreamProxyUri), true, true, LogFilePath, DataDirectory, sessionMode, CurrentWebPolicyVersion);
             await ServeControlAsync(liveStatus, stop, () => Interlocked.Exchange(ref confirmed, 1));
             return 0;
         }

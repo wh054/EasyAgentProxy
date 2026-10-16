@@ -30,7 +30,7 @@ internal static class Program
         };
 
         var failures = 0;
-        foreach (var test in tests.Concat(SteamProxyTests.Cases).Concat(SteamLauncherTests.Cases).Concat(SteamLifetimeTests.Cases).Concat(SteamControlTests.Cases))
+        foreach (var test in tests.Concat(SteamProxyTests.Cases).Concat(SteamLauncherTests.Cases).Concat(SteamLifetimeTests.Cases).Concat(SteamControlTests.Cases).Concat(SteamWebPolicyTests.Cases))
         {
             try
             {

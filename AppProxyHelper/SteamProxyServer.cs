@@ -84,7 +84,8 @@ public sealed class SteamProxyServer : IAsyncDisposable
     private async Task ForwardAsync(HttpContext context)
     {
         var host = SteamDomainCatalog.Normalize(context.Request.Host.Host);
-        if (!_routes.TryGetValue(host, out var route) || HttpMethods.IsConnect(context.Request.Method))
+        if (!_routes.TryGetValue(host, out var route) || HttpMethods.IsConnect(context.Request.Method)
+            || SteamWebRequestPolicy.IsDownloadPath(context.Request.Path.Value))
         {
             context.Response.StatusCode = StatusCodes.Status421MisdirectedRequest;
             return;

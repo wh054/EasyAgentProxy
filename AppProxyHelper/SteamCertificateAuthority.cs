@@ -25,6 +25,9 @@ public sealed class SteamCertificateAuthority : IDisposable
         _allowedDomains = new HashSet<string>((allowedDomains ?? SteamDomainCatalog.Domains).Select(NormalizeHost), StringComparer.OrdinalIgnoreCase);
         if (_allowedDomains.Count == 0)
             throw new ArgumentException("Steam 证书域名白名单不能为空。", nameof(allowedDomains));
+        foreach (var domain in _allowedDomains)
+            if (!SteamDomainCatalog.IsSupported(domain))
+                throw new ArgumentException($"Steam 证书只允许网页白名单域名：{domain}", nameof(allowedDomains));
     }
 
     public string DataDirectory { get; }

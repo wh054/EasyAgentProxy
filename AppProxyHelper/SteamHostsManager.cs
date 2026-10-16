@@ -197,6 +197,8 @@ public sealed class SteamHostsManager
         var normalized = domains.Select(NormalizeDomain).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
         if (normalized.Length == 0)
             throw new ArgumentException("Steam 代理域名列表不能为空。", nameof(domains));
+        if (normalized.Any(host => !SteamDomainCatalog.IsSupported(host)))
+            throw new ArgumentException("Hosts 只允许接管 Steam 网页域名，下载与通用 CDN 保留原网络链路。", nameof(domains));
         return normalized;
     }
 
